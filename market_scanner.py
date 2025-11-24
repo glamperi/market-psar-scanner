@@ -538,8 +538,8 @@ def detect_changes(previous, current):
         
         # Get current data if available
         exit_data = exit_info['data'].copy()
-        if ticker in current:
-            # Update with current price/distance
+        if ticker in current and current[ticker] is not None:
+            # Update with current price/distance  
             exit_data.update(current[ticker])
         
         exit_data['days_ago'] = days_ago
@@ -587,10 +587,10 @@ def send_email_alert(subject, body):
         server.send_message(msg)
         server.quit()
         
-        print(f"✓ Email sent successfully: {subject}")
+        print(f"[OK] Email sent successfully: {subject}")
         return True
     except Exception as e:
-        print(f"✗ Email failed with error: {e}")
+        print(f"[FAIL] Email failed with error: {e}")
         print(f"  Error type: {type(e).__name__}")
         import traceback
         traceback.print_exc()
@@ -1054,7 +1054,7 @@ def main():
             # Sort by distance for export
             sorted_buys = sorted(all_buys, key=lambda x: x.get('Distance %', 0), reverse=True)
             writer.writerows(sorted_buys)
-        print(f"✓ Exported {len(all_buys)} PSAR buy signals to current_psar_buys.csv")
+        print(f"[OK] Exported {len(all_buys)} PSAR buy signals to current_psar_buys.csv")
     
     # 2. Early Buy Signals (ALL, not just top 30)
     if all_early:
@@ -1074,7 +1074,7 @@ def main():
             # Sort by signal weight for export
             sorted_early = sorted(all_early, key=lambda x: x.get('signal_weight', 0), reverse=True)
             writer.writerows(sorted_early)
-        print(f"✓ Exported {len(all_early)} early signals to early_buy_signals.csv")
+        print(f"[OK] Exported {len(all_early)} early signals to early_buy_signals.csv")
     
     # 3. New PSAR Entries (recently crossed into PSAR buy)
     if changes['new_entries']:
@@ -1094,7 +1094,7 @@ def main():
             # Sort by signal weight for export
             sorted_new = sorted(changes['new_entries'], key=lambda x: x.get('signal_weight', 0), reverse=True)
             writer.writerows(sorted_new)
-        print(f"✓ Exported {len(changes['new_entries'])} new entries to new_psar_entries.csv")
+        print(f"[OK] Exported {len(changes['new_entries'])} new entries to new_psar_entries.csv")
     
     # 4. Dividend PSAR Stocks
     if dividend_psar_stocks:
@@ -1108,7 +1108,7 @@ def main():
             # Sort by dividend yield for export
             sorted_div = sorted(dividend_psar_stocks, key=lambda x: x.get('Dividend Yield %', 0), reverse=True)
             writer.writerows(sorted_div)
-        print(f"✓ Exported {len(dividend_psar_stocks)} dividend stocks to dividend_psar_stocks.csv")
+        print(f"[OK] Exported {len(dividend_psar_stocks)} dividend stocks to dividend_psar_stocks.csv")
     
     # 5. Recent Exits (7-day history)
     if changes['recent_exits_7day']:
@@ -1119,7 +1119,7 @@ def main():
             writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
             writer.writeheader()
             writer.writerows(changes['recent_exits_7day'])
-        print(f"✓ Exported {len(changes['recent_exits_7day'])} recent exits to recent_exits_7day.csv")
+        print(f"[OK] Exported {len(changes['recent_exits_7day'])} recent exits to recent_exits_7day.csv")
     
     print(f"\nCSV files saved to {csv_dir}/")
     print("These files contain the COMPLETE dataset (not limited to top 50)")
@@ -1163,7 +1163,7 @@ def main():
     print(f"⚠️  New Exits: {len(changes['new_exits'])} stocks")
     print("=" * 100)
     
-    print("\n✓ Done!")
+    print("\n[OK] Done!")
 
 if __name__ == "__main__":
     main()

@@ -96,12 +96,12 @@ def get_all_tickers():
                 tickers = [t.strip() for t in tickers if t.strip()]
                 
                 all_tickers.update(tickers)
-                print(f"  ✓ Got {len(tickers)} {source} tickers from {filename}")
+                print(f"  [OK] Got {len(tickers)} {source} tickers from {filename}")
                 
                 for t in tickers:
                     ticker_sources.setdefault(t, []).append(source)
             except Exception as e:
-                print(f"  ✗ Failed to read {filename}: {e}")
+                print(f"  [FAIL] Failed to read {filename}: {e}")
         else:
             # Only warn if it's not the standard indices (optional)
             pass
@@ -124,13 +124,13 @@ def get_all_tickers():
                 tickers = [t.strip() for t in tickers if t.strip()]
                 
                 all_tickers.update(tickers)
-                print(f"  ✓ Found {filename} ({len(tickers)} stocks)")
+                print(f"  [OK] Found {filename} ({len(tickers)} stocks)")
                 
                 source_name = list_name.replace('ibd_', '').upper()
                 for t in tickers:
                     ticker_sources.setdefault(t, []).append(f"IBD {source_name}")
             except Exception as e:
-                print(f"  ✗ Failed to read {filename}: {e}")
+                print(f"  [FAIL] Failed to read {filename}: {e}")
 
     # 3. Add Crypto and Indices (Hardcoded)
     crypto_indices = ['BTC-USD', 'ETH-USD', '^GSPC', '^NDX', '^RUT']
