@@ -101,28 +101,42 @@ def get_ibd_from_csv():
     """
     ibd_lists = {}
     
-    csv_files = {
-        'ibd_50': 'ibd_50.csv',
-        'ibd_bigcap': 'ibd_bigcap20.csv',
-        'ibd_ipo': 'ibd_ipo.csv',
-        'ibd_spotlight': 'ibd_spotlight.csv',
-        'ibd_sector': 'ibd_sector.csv'
+    # Check for both CSV and XLS files
+    files_to_check = {
+        'ibd_50': ['ibd_50.csv', 'IBD_50.xls', 'ibd_50.xls'],
+        'ibd_bigcap': ['ibd_bigcap20.csv', 'BIG_CAP_20.xls', 'ibd_bigcap20.xls'],
+        'ibd_ipo': ['ibd_ipo.csv', 'IPO_LEADERS.xls', 'ibd_ipo.xls'],
+        'ibd_spotlight': ['ibd_spotlight.csv', 'STOCK_SPOTLIGHT.xls', 'ibd_spotlight.xls'],
+        'ibd_sector': ['ibd_sector.csv', 'SECTOR_LEADERS.xls', 'ibd_sector.xls']
     }
     
-    for key, filename in csv_files.items():
-        try:
-            if os.path.exists(filename):
-                df = pd.read_csv(filename)
-                # Assume ticker is in first column or column named 'Symbol' or 'Ticker'
-                if 'Symbol' in df.columns:
-                    tickers = df['Symbol'].tolist()
-                elif 'Ticker' in df.columns:
-                    tickers = df['Ticker'].tolist()
-                else:
-                    tickers = df.iloc[:, 0].tolist()
-                ibd_lists[key] = tickers
-        except:
-            pass
+    for key, filenames in files_to_check.items():
+        for filename in filenames:
+            try:
+                if os.path.exists(filename):
+                    # Read file based on extension
+                    if filename.endswith('.csv'):
+                        df = pd.read_csv(filename)
+                    else:  # .xls or .xlsx
+                        df = pd.read_excel(filename)
+                    
+                    # Find ticker column
+                    if 'Symbol' in df.columns:
+                        tickers = df['Symbol'].tolist()
+                    elif 'Ticker' in df.columns:
+                        tickers = df['Ticker'].tolist()
+                    else:
+                        tickers = df.iloc[:, 0].tolist()
+                    
+                    # Clean up - remove "Symbol" header if it's in data
+                    tickers = [str(t).strip() for t in tickers if str(t) != 'Symbol' and str(t) != 'nan' and len(str(t)) <= 10]
+                    
+                    if tickers:
+                        ibd_lists[key] = tickers
+                        print(f"  ✓ Found {filename} ({len(tickers)} stocks)")
+                        break  # Found file, stop trying other extensions
+            except Exception as e:
+                pass
     
     return ibd_lists
 
