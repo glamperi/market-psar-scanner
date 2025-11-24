@@ -944,6 +944,42 @@ def main():
     print(f"  Total PSAR buys: {len(all_buys)}")
     print(f"  Total early signals: {len(all_early)}")
     
+    # Print top 50 dividend stocks with PSAR buy signals
+    print("\n" + "=" * 100)
+    print("TOP 50 DIVIDEND STOCKS WITH PSAR BUY SIGNALS")
+    print("=" * 100)
+    
+    # Get dividend stocks with PSAR buy
+    dividend_psar_stocks = []
+    for stock in all_buys:
+        div_yield = stock.get('Dividend Yield %', 0)
+        if div_yield and div_yield > 1.0:
+            dividend_psar_stocks.append(stock)
+    
+    if dividend_psar_stocks:
+        # Sort by dividend yield descending
+        top_50_dividends = sorted(dividend_psar_stocks, key=lambda x: x.get('Dividend Yield %', 0), reverse=True)[:50]
+        
+        print(f"\nFound {len(dividend_psar_stocks)} dividend stocks (>1% yield) with PSAR Buy signals")
+        print(f"Showing top {len(top_50_dividends)}:\n")
+        print(f"{'Rank':<5} {'Ticker':<8} {'Company':<35} {'Div %':<8} {'Price':<10} {'Distance %':<12} {'Sector':<25}")
+        print("-" * 110)
+        
+        for i, stock in enumerate(top_50_dividends, 1):
+            ticker = stock['Ticker']
+            company = stock.get('Company', 'N/A')[:33]
+            div_yield = stock.get('Dividend Yield %', 0)
+            price = stock['Price']
+            distance = stock.get('Distance %', 0)
+            sector = stock.get('Sector', 'N/A')[:23]
+            
+            print(f"{i:<5} {ticker:<8} {company:<35} {div_yield:>6.2f}% ${price:>8.2f} {distance:>10.2f}%  {sector:<25}")
+    else:
+        print("\nNo dividend stocks (>1% yield) with PSAR Buy signals found.")
+    
+    print("\n" + "=" * 100)
+    print()
+    
     # Save current status with exit history
     results_dict['_exit_history'] = changes.get('_exit_history', {})
     save_current_status(results_dict)

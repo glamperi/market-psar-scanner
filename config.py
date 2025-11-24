@@ -14,63 +14,158 @@ from io import StringIO
 # =============================================================================
 
 def get_sp500_tickers():
-    """Get S&P 500 tickers from Wikipedia"""
+    """Get S&P 500 tickers from multiple sources with proper fallback chain"""
+    
+    # Method 1: Try local CSV file first (most reliable)
+    try:
+        if os.path.exists('sp500_tickers.csv'):
+            print("  Fetching S&P 500 from CSV file...")
+            df = pd.read_csv('sp500_tickers.csv')
+            # Handle different possible column names
+            symbol_col = None
+            for col in ['Symbol', 'Ticker', 'symbol', 'ticker']:
+                if col in df.columns:
+                    symbol_col = col
+                    break
+            if symbol_col:
+                tickers = df[symbol_col].str.replace('.', '-').tolist()
+                print(f"  ✓ Got {len(tickers)} S&P 500 tickers from CSV")
+                return tickers
+    except Exception as e:
+        print(f"  ✗ CSV failed: {e}")
+    
+    # Method 2: Try Slickcharts (more reliable than Wikipedia)
+    try:
+        print("  Fetching S&P 500 from Slickcharts...")
+        url = 'https://www.slickcharts.com/sp500'
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        response = requests.get(url, headers=headers, timeout=10)
+        tables = pd.read_html(response.text)
+        df = tables[0]
+        tickers = df['Symbol'].str.replace('.', '-').tolist()
+        print(f"  ✓ Got {len(tickers)} S&P 500 tickers from Slickcharts")
+        return tickers
+    except Exception as e:
+        print(f"  ✗ Slickcharts failed: {e}")
+    
+    # Method 3: Try Wikipedia with better headers
     try:
         print("  Fetching S&P 500 from Wikipedia...")
         url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
-        tables = pd.read_html(url)
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        response = requests.get(url, headers=headers, timeout=10)
+        tables = pd.read_html(response.text)
         df = tables[0]
         tickers = df['Symbol'].str.replace('.', '-').tolist()
-        print(f"  ✓ Got {len(tickers)} S&P 500 tickers")
+        print(f"  ✓ Got {len(tickers)} S&P 500 tickers from Wikipedia")
         return tickers
     except Exception as e:
-        print(f"  ✗ Failed to fetch S&P 500: {e}")
-        print("  → Using fallback list...")
-        # Fallback to a static list of major S&P 500 stocks
-        return [
-            'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 'BRK-B',
-            'LLY', 'AVGO', 'JPM', 'V', 'UNH', 'XOM', 'MA', 'COST', 'HD', 'PG',
-            'JNJ', 'NFLX', 'BAC', 'ABBV', 'CVX', 'CRM', 'KO', 'MRK', 'WMT',
-            'AMD', 'PEP', 'TMO', 'CSCO', 'ACN', 'MCD', 'LIN', 'ABT', 'DHR',
-            'ADBE', 'INTC', 'DIS', 'CMCSA', 'NKE', 'VZ', 'TXN', 'WFC', 'PM',
-            'ORCL', 'QCOM', 'INTU', 'IBM', 'AMGN', 'HON', 'UNP', 'RTX', 'CAT',
-            'GE', 'AMAT', 'LOW', 'SPGI', 'MS', 'BA', 'ELV', 'NEE', 'BKNG',
-            'BLK', 'DE', 'AXP', 'GS', 'SYK', 'SBUX', 'TJX', 'MDT', 'GILD',
-            'MMC', 'LRCX', 'ADI', 'ADP', 'MDLZ', 'CVS', 'AMT', 'VRTX', 'PLD',
-            'REGN', 'CI', 'C', 'ISRG', 'ZTS', 'BMY', 'MO', 'SO', 'CB', 'DUK',
-            'BDX', 'SHW', 'SCHW', 'ETN', 'PNC', 'TMUS', 'NOC', 'BSX', 'EOG',
-            'CME', 'EQIX', 'APH', 'USB', 'ITW', 'COP', 'MCO', 'HCA', 'MMM',
-            'ICE', 'NSC', 'WM', 'PYPL', 'EMR', 'FCX', 'AON', 'TGT', 'PGR',
-            'FI', 'MU', 'PSA', 'SLB', 'MCK', 'APD', 'F', 'GM', 'JCI', 'FDX'
-        ]
+        print(f"  ✗ Wikipedia failed: {e}")
+    
+    # Method 4: Hardcoded fallback - expanded to 250 stocks
+    print("  → Using expanded hardcoded fallback (250 stocks)...")
+    return [
+        # Mega caps (Top 50)
+        'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 'BRK-B',
+        'LLY', 'AVGO', 'JPM', 'V', 'UNH', 'XOM', 'MA', 'COST', 'HD', 'PG',
+        'JNJ', 'NFLX', 'BAC', 'ABBV', 'CVX', 'CRM', 'KO', 'MRK', 'WMT',
+        'AMD', 'PEP', 'TMO', 'CSCO', 'ACN', 'MCD', 'LIN', 'ABT', 'DHR',
+        'ADBE', 'INTC', 'DIS', 'CMCSA', 'NKE', 'VZ', 'TXN', 'WFC', 'PM',
+        'ORCL', 'QCOM', 'INTU', 'IBM', 'AMGN',
+        # Large caps (51-150)
+        'HON', 'UNP', 'RTX', 'CAT', 'GE', 'AMAT', 'LOW', 'SPGI', 'MS', 'BA',
+        'ELV', 'NEE', 'BKNG', 'BLK', 'DE', 'AXP', 'GS', 'SYK', 'SBUX', 'TJX',
+        'MDT', 'GILD', 'MMC', 'LRCX', 'ADI', 'ADP', 'MDLZ', 'CVS', 'AMT', 'VRTX',
+        'PLD', 'REGN', 'CI', 'C', 'ISRG', 'ZTS', 'BMY', 'MO', 'SO', 'CB',
+        'DUK', 'BDX', 'SHW', 'SCHW', 'ETN', 'PNC', 'TMUS', 'NOC', 'BSX', 'EOG',
+        'CME', 'EQIX', 'APH', 'USB', 'ITW', 'COP', 'MCO', 'HCA', 'MMM', 'ICE',
+        'NSC', 'WM', 'PYPL', 'EMR', 'FCX', 'AON', 'TGT', 'PGR', 'FI', 'MU',
+        'PSA', 'SLB', 'MCK', 'APD', 'F', 'GM', 'JCI', 'FDX', 'KLAC', 'SNPS',
+        'CDNS', 'MAR', 'AIG', 'CSX', 'MRVL', 'ORLY', 'PANW', 'ROP', 'MSI', 'AJG',
+        'TT', 'CARR', 'PCAR', 'AFL', 'AZO', 'ADSK', 'NXPI', 'WELL', 'O', 'CPRT',
+        # Mid-large caps (151-250)
+        'GWW', 'TRV', 'SRE', 'CTAS', 'PAYX', 'CL', 'CMG', 'HLT', 'D', 'ROST',
+        'AEP', 'SPG', 'TEL', 'MSCI', 'ALL', 'BK', 'KMI', 'ODFL', 'FTNT', 'PRU',
+        'KHC', 'CTVA', 'YUM', 'EA', 'FAST', 'EW', 'A', 'VRSK', 'GIS', 'CEG',
+        'DD', 'IT', 'HSY', 'KMB', 'GEHC', 'IDXX', 'MCHP', 'EXC', 'XEL', 'DXCM',
+        'OTIS', 'GLW', 'CTSH', 'DOW', 'VMC', 'HES', 'PWR', 'MLM', 'WBD', 'KEYS',
+        'IQV', 'ACGL', 'ROK', 'CHD', 'WEC', 'PPG', 'CBRE', 'MTD', 'MPWR', 'FTV',
+        'AVB', 'CDW', 'FANG', 'EIX', 'HWM', 'TRGP', 'IRM', 'BIIB', 'DLR', 'APTV',
+        'WST', 'CSGP', 'VICI', 'DAL', 'STZ', 'LH', 'DLTR', 'UAL', 'EQR', 'AWK',
+        'RSG', 'TROW', 'HPQ', 'ES', 'LVS', 'FITB', 'WY', 'COF', 'MTB', 'ARE',
+        'RMD', 'ZBH', 'NTRS', 'EBAY', 'BALL', 'TDG', 'CF', 'HBAN', 'WAB', 'VTR'
+    ]
 
 def get_nasdaq100_tickers():
-    """Get NASDAQ 100 tickers from Wikipedia"""
+    """Get NASDAQ 100 tickers from multiple sources with proper fallback chain"""
+    
+    # Method 1: Try local CSV file first
+    try:
+        if os.path.exists('nasdaq100_tickers.csv'):
+            print("  Fetching NASDAQ 100 from CSV file...")
+            df = pd.read_csv('nasdaq100_tickers.csv')
+            symbol_col = None
+            for col in ['Symbol', 'Ticker', 'symbol', 'ticker']:
+                if col in df.columns:
+                    symbol_col = col
+                    break
+            if symbol_col:
+                tickers = df[symbol_col].tolist()
+                print(f"  ✓ Got {len(tickers)} NASDAQ 100 tickers from CSV")
+                return tickers
+    except Exception as e:
+        print(f"  ✗ CSV failed: {e}")
+    
+    # Method 2: Try Slickcharts
+    try:
+        print("  Fetching NASDAQ 100 from Slickcharts...")
+        url = 'https://www.slickcharts.com/nasdaq100'
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        response = requests.get(url, headers=headers, timeout=10)
+        tables = pd.read_html(response.text)
+        df = tables[0]
+        tickers = df['Symbol'].tolist()
+        print(f"  ✓ Got {len(tickers)} NASDAQ 100 tickers from Slickcharts")
+        return tickers
+    except Exception as e:
+        print(f"  ✗ Slickcharts failed: {e}")
+    
+    # Method 3: Try Wikipedia with better headers
     try:
         print("  Fetching NASDAQ 100 from Wikipedia...")
         url = 'https://en.wikipedia.org/wiki/NASDAQ-100'
-        tables = pd.read_html(url)
-        df = tables[4]  # The main table
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) APpleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        response = requests.get(url, headers=headers, timeout=10)
+        tables = pd.read_html(response.text)
+        df = tables[4]
         tickers = df['Ticker'].tolist()
-        print(f"  ✓ Got {len(tickers)} NASDAQ 100 tickers")
+        print(f"  ✓ Got {len(tickers)} NASDAQ 100 tickers from Wikipedia")
         return tickers
     except Exception as e:
-        print(f"  ✗ Failed to fetch NASDAQ 100: {e}")
-        print("  → Using fallback list...")
-        # Fallback to a static list of major NASDAQ 100 stocks
-        return [
-            'AAPL', 'MSFT', 'GOOGL', 'GOOG', 'AMZN', 'NVDA', 'META', 'TSLA',
-            'AVGO', 'COST', 'NFLX', 'AMD', 'PEP', 'CSCO', 'ADBE', 'TMUS',
-            'INTU', 'TXN', 'QCOM', 'CMCSA', 'AMGN', 'HON', 'AMAT', 'SBUX',
-            'PANW', 'ADP', 'GILD', 'VRTX', 'ADI', 'LRCX', 'REGN', 'ISRG',
-            'BKNG', 'MU', 'SNPS', 'KLAC', 'INTC', 'PYPL', 'CDNS', 'MELI',
-            'CRWD', 'ORLY', 'FTNT', 'MRVL', 'CTAS', 'DASH', 'MNST', 'WDAY',
-            'DXCM', 'ABNB', 'CHTR', 'NXPI', 'TTD', 'TEAM', 'PCAR', 'PAYX',
-            'IDXX', 'CPRT', 'ODFL', 'AZN', 'KDP', 'FAST', 'ROST', 'BKR',
-            'GEHC', 'EA', 'CTSH', 'VRSK', 'DDOG', 'EXC', 'XEL', 'KHC', 'ZS',
-            'FANG', 'CSGP', 'CCEP', 'ANSS', 'CDW', 'ON', 'BIIB', 'WBD', 'MDB',
-            'ILMN', 'GFS', 'MCHP', 'DLTR', 'WBA'
-        ]
+        print(f"  ✗ Wikipedia failed: {e}")
+    
+    # Method 4: Hardcoded fallback - complete NASDAQ 100
+    print("  → Using complete hardcoded fallback (100+ stocks)...")
+    return [
+        # Top 20
+        'AAPL', 'MSFT', 'GOOGL', 'GOOG', 'AMZN', 'NVDA', 'META', 'TSLA',
+        'AVGO', 'COST', 'NFLX', 'AMD', 'PEP', 'CSCO', 'ADBE', 'TMUS',
+        'INTU', 'TXN', 'QCOM', 'CMCSA',
+        # Next 30
+        'AMGN', 'HON', 'AMAT', 'SBUX', 'PANW', 'ADP', 'GILD', 'VRTX',
+        'ADI', 'LRCX', 'REGN', 'ISRG', 'BKNG', 'MU', 'SNPS', 'KLAC',
+        'INTC', 'PYPL', 'CDNS', 'MELI', 'CRWD', 'ORLY', 'FTNT', 'MRVL',
+        'CTAS', 'DASH', 'MNST', 'WDAY', 'DXCM', 'ABNB',
+        # Next 30
+        'CHTR', 'NXPI', 'TTD', 'TEAM', 'PCAR', 'PAYX', 'IDXX', 'CPRT',
+        'ODFL', 'AZN', 'KDP', 'FAST', 'ROST', 'BKR', 'GEHC', 'EA',
+        'CTSH', 'VRSK', 'DDOG', 'EXC', 'XEL', 'KHC', 'ZS', 'FANG',
+        'CSGP', 'CCEP', 'ANSS', 'CDW', 'ON', 'BIIB',
+        # Remaining 20+
+        'WBD', 'MDB', 'ILMN', 'GFS', 'MCHP', 'DLTR', 'WBA', 'MRNA',
+        'SMCI', 'ARM', 'ALGN', 'SIRI', 'TTWO', 'RIVN', 'LCID', 'ZM',
+        'HOOD', 'RBLX', 'COIN', 'PLTR', 'SNOW'
+    ]
 
 def get_russell1000_additional():
     """Get additional Russell 1000 stocks not in S&P 500"""
@@ -80,6 +175,73 @@ def get_russell1000_additional():
         'FTNT', 'HUBS', 'IOT', 'MDB', 'NET', 'OKTA', 'PANW', 'PATH',
         'RIOT', 'RIVN', 'RBLX', 'SHOP', 'SNOW', 'SQ', 'TEAM', 'TTD',
         'TWLO', 'U', 'UBER', 'WDAY', 'ZM', 'ZS'
+    ]
+
+def get_russell2000_tickers():
+    """Get Russell 2000 tickers from multiple sources"""
+    
+    # Method 1: Try local CSV file first
+    try:
+        if os.path.exists('russell2000_tickers.csv'):
+            print("  Fetching Russell 2000 from CSV file...")
+            df = pd.read_csv('russell2000_tickers.csv')
+            symbol_col = None
+            for col in ['Symbol', 'Ticker', 'symbol', 'ticker']:
+                if col in df.columns:
+                    symbol_col = col
+                    break
+            if symbol_col:
+                tickers = df[symbol_col].str.replace('.', '-').tolist()
+                print(f"  ✓ Got {len(tickers)} Russell 2000 tickers from CSV")
+                return tickers
+    except Exception as e:
+        print(f"  ✗ CSV failed: {e}")
+    
+    # Method 2: Try iShares IWM holdings (official Russell 2000 ETF)
+    try:
+        print("  Fetching Russell 2000 from iShares IWM holdings...")
+        url = 'https://www.ishares.com/us/products/239710/ishares-russell-2000-etf'
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        response = requests.get(url, headers=headers, timeout=10)
+        # This would need additional parsing - skip for now
+        raise Exception("iShares parsing not implemented yet")
+    except Exception as e:
+        print(f"  ✗ iShares failed: {e}")
+    
+    # Method 3: Hardcoded fallback - top 200 Russell 2000 stocks
+    print("  → Using hardcoded fallback (200 top Russell 2000 stocks)...")
+    return [
+        # Small cap growth leaders
+        'SMCI', 'CELH', 'DECK', 'CAVA', 'APP', 'CWAN', 'CVNA', 'FOUR', 
+        'BROS', 'RBLX', 'SNOW', 'GTLB', 'IOT', 'PCVX', 'HIMS', 'COIN',
+        'IBKR', 'SFM', 'EXAS', 'RYAN', 'PCOR', 'LITE', 'MKSI', 'ENTG',
+        # Small cap value/dividend
+        'OGE', 'PNW', 'NWE', 'AVA', 'CWEN', 'BKH', 'SJW', 'AWR', 'YORW',
+        'NJR', 'SR', 'MGEE', 'UTL', 'OTTR', 'CNS', 'CWT', 'GEF', 'TRNO',
+        # REITs
+        'MAC', 'KRG', 'VNO', 'SLG', 'BXP', 'HIW', 'DEI', 'JBGS', 'PDM',
+        'ESRT', 'HPP', 'PGRE', 'AKR', 'BRX', 'UE', 'WHL', 'ROIC', 'GTY',
+        # Financials  
+        'EWBC', 'WAL', 'CATY', 'BANR', 'CVBF', 'PNFP', 'THFF', 'UMBF',
+        'CBSH', 'FFIN', 'HWC', 'FULT', 'CADE', 'TCBI', 'FFNW', 'SBCF',
+        # Industrials
+        'STRL', 'GVA', 'PATK', 'ARCB', 'SAIA', 'WERN', 'JBHT', 'CHRW',
+        'KNX', 'MATX', 'HRI', 'HUBG', 'MRTN', 'ECHO', 'SNDR', 'HTLD',
+        # Technology
+        'TENB', 'DOMO', 'NCNO', 'DOCN', 'BRZE', 'ALRM', 'PRGS', 'APPF',
+        'JAMF', 'BLKB', 'QLYS', 'MGNI', 'PUBM', 'COUP', 'ZUO', 'BILL',
+        # Healthcare
+        'LEGN', 'PRCT', 'CORT', 'KRYS', 'TMDX', 'OUST', 'IRTC', 'PRVA',
+        'GKOS', 'ATRC', 'TNDM', 'PODD', 'AXNX', 'SRRK', 'TVTX', 'CGEM',
+        # Consumer
+        'SHAK', 'TXRH', 'BLMN', 'CBRL', 'DIN', 'FWRG', 'CAKE', 'BJRI',
+        'CHUY', 'RUTH', 'PLAY', 'WING', 'EAT', 'TACO', 'LOCO', 'PZZA',
+        # Energy
+        'NOG', 'MTDR', 'SM', 'MGY', 'PR', 'CIVI', 'GPOR', 'REI',
+        'CRGY', 'CPE', 'RRC', 'CTRA', 'CHRD', 'VTLE', 'PBF', 'NINE',
+        # Materials
+        'CENX', 'SXC', 'MP', 'HL', 'KALU', 'CRS', 'MTRN', 'MATW',
+        'CMC', 'RS', 'ZEUS', 'WOR', 'MLI', 'SLVM', 'HAYN', 'ROCK'
     ]
 
 def get_crypto_and_indices():
@@ -162,6 +324,12 @@ def get_all_tickers():
     russell = get_russell1000_additional()
     for ticker in russell:
         ticker_sources.setdefault(ticker, []).append('Russell 1000')
+    
+    # Russell 2000
+    print("Fetching Russell 2000...")
+    russell2000 = get_russell2000_tickers()
+    for ticker in russell2000:
+        ticker_sources.setdefault(ticker, []).append('Russell 2000')
     
     # Crypto and Indices
     print("Adding crypto and indices...")
