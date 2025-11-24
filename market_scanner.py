@@ -40,6 +40,34 @@ from config import (
 print("Market Scanner - Using manual indicator calculations")
 
 # =============================================================================
+# SIGNAL WEIGHT CALCULATION
+# =============================================================================
+
+def calculate_signal_weight(stock_data):
+    """
+    Calculate signal weight out of 100 based on indicator presence
+    Weighting system:
+    - MACD: 30 points (strong trend reversal indicator)
+    - Bollinger Bands: 10 points (volatility/oversold)
+    - Williams %R: 20 points (momentum/oversold)
+    - Coppock Curve: 10 points (long-term bottoms)
+    - Ultimate Oscillator: 30 points (multi-timeframe confirmation)
+    Total: 100 points maximum
+    """
+    weight = 0
+    if stock_data.get('MACD_Buy', False):
+        weight += 30
+    if stock_data.get('BB_Buy', False):
+        weight += 10
+    if stock_data.get('WillR_Buy', False):
+        weight += 20
+    if stock_data.get('Coppock_Buy', False):
+        weight += 10
+    if stock_data.get('Ultimate_Buy', False):
+        weight += 30
+    return weight
+
+# =============================================================================
 # PSAR CALCULATION
 # =============================================================================
 
@@ -725,25 +753,20 @@ def format_alert_email(changes, all_buys, all_early):
         <h3 style="color: green;">🟢 NEW BUY SIGNALS (Recently Entered PSAR Buy)</h3>
         <table border="1" cellpadding="5" style="border-collapse: collapse;">
             <tr style="background-color: #90EE90;">
-                <th>Ticker</th><th>Company</th><th>Source</th><th>Price</th><th>Distance %</th><th>Day Chg %</th><th>MACD</th><th>BB</th><th>Coppock</th><th>Ultimate</th><th>RSI</th>
+                <th>Ticker</th><th>Company</th><th>Source</th><th>Price</th><th>Distance %</th><th>Day Chg %</th><th>Signal Weight</th><th>MACD</th><th>BB</th><th>WillR</th><th>Coppock</th><th>Ultimate</th><th>RSI</th>
             </tr>
         """
-        # Calculate signal count for each new entry
+        # Calculate signal weight for each new entry
         for pos in changes['new_entries']:
-            pos['signal_count'] = sum([
-                pos.get('MACD_Buy', False),
-                pos.get('BB_Buy', False),
-                pos.get('WillR_Buy', False),
-                pos.get('Coppock_Buy', False),
-                pos.get('Ultimate_Buy', False)
-            ])
+            pos['signal_weight'] = calculate_signal_weight(pos)
         
-        # Sort by highest distance first (strongest signals), then by signal count
+        # Sort by signal weight DESC (highest first)
         sorted_entries = sorted(changes['new_entries'], 
-                               key=lambda x: (x.get('Distance %', 0), x.get('signal_count', 0)), 
+                               key=lambda x: x.get('signal_weight', 0), 
                                reverse=True)
         
         for pos in sorted_entries:
+            signal_weight = pos.get('signal_weight', 0)
             html += f"""
             <tr>
                 <td><strong>{pos['Ticker']}</strong></td>
@@ -752,8 +775,10 @@ def format_alert_email(changes, all_buys, all_early):
                 <td>${pos['Price']}</td>
                 <td>{pos['Distance %']}%</td>
                 <td style="color: {'green' if pos['Day Change %'] > 0 else 'red'};">{pos['Day Change %']:+.2f}%</td>
+                <td><strong>{signal_weight}</strong></td>
                 <td>{'✓' if pos.get('MACD_Buy') else ''}</td>
                 <td>{'✓' if pos.get('BB_Buy') else ''}</td>
+                <td>{'✓' if pos.get('WillR_Buy') else ''}</td>
                 <td>{'✓' if pos.get('Coppock_Buy') else ''}</td>
                 <td>{'✓' if pos.get('Ultimate_Buy') else ''}</td>
                 <td>{pos.get('RSI', 'N/A')}</td>
@@ -789,12 +814,15 @@ def format_alert_email(changes, all_buys, all_early):
     <br>
     """
     
-    # ALL PSAR Buy Signals (limit to top 50 for email)
-    if all_buys:
-        top_buys = sorted(all_buys, key=lambda x: x['Distance %'], reverse=True)[:50]
+    # ALL PSAR Buy Signals (includes both existing and new entries)
+    # Combine still_buy and new_entries since they're all PSAR buys
+    all_current_psar_buys = all_buys  # This already includes everything with PSAR_Buy==True
+    
+    if all_current_psar_buys:
+        top_buys = sorted(all_current_psar_buys, key=lambda x: x['Distance %'], reverse=True)[:50]
         html += f"""
         <h3>🟢 CURRENT BUY SIGNALS (Top 50 by Distance to PSAR)</h3>
-        <p><em>Showing {len(top_buys)} of {len(all_buys)} total PSAR buy signals</em></p>
+        <p><em>Showing {len(top_buys)} of {len(all_current_psar_buys)} total PSAR buy signals</em></p>
         <table border="1" cellpadding="5" style="border-collapse: collapse;">
             <tr style="background-color: #E0FFE0;">
                 <th>Ticker</th><th>Company</th><th>Source</th><th>Price</th><th>Dist %</th><th>Day Chg %</th><th>MACD</th><th>BB</th><th>Coppock</th><th>Ultimate</th><th>RSI</th>
@@ -820,26 +848,21 @@ def format_alert_email(changes, all_buys, all_early):
     
     # ALL Early Buy Signals (limit to top 30 for email)
     if all_early:
-        # Count signal strength
+        # Calculate signal weight
         for pos in all_early:
-            pos['signal_count'] = sum([
-                pos.get('MACD_Buy', False),
-                pos.get('BB_Buy', False),
-                pos.get('WillR_Buy', False),
-                pos.get('Coppock_Buy', False),
-                pos.get('Ultimate_Buy', False)
-            ])
+            pos['signal_weight'] = calculate_signal_weight(pos)
         
-        top_early = sorted(all_early, key=lambda x: x['signal_count'], reverse=True)[:30]
+        top_early = sorted(all_early, key=lambda x: x['signal_weight'], reverse=True)[:30]
         html += f"""
-        <h3>🟡 EARLY BUY SIGNALS (Top 30 by Signal Count)</h3>
+        <h3>🟡 EARLY BUY SIGNALS (Top 30 by Signal Weight)</h3>
         <p><em>Showing {len(top_early)} of {len(all_early)} total early signals</em></p>
         <table border="1" cellpadding="5" style="border-collapse: collapse;">
             <tr style="background-color: #FFFFE0;">
-                <th>Ticker</th><th>Company</th><th>Source</th><th>Price</th><th>Day Chg %</th><th>Signals</th><th>MACD</th><th>BB</th><th>WillR</th><th>Coppock</th><th>Ultimate</th><th>RSI</th>
+                <th>Ticker</th><th>Company</th><th>Source</th><th>Price</th><th>Day Chg %</th><th>Signal Weight</th><th>MACD</th><th>BB</th><th>WillR</th><th>Coppock</th><th>Ultimate</th><th>RSI</th>
             </tr>
         """
         for pos in top_early:
+            signal_weight = pos.get('signal_weight', 0)
             html += f"""
             <tr>
                 <td><strong>{pos['Ticker']}</strong></td>
@@ -847,7 +870,7 @@ def format_alert_email(changes, all_buys, all_early):
                 <td><small>{pos.get('Source', 'N/A')[:15]}</small></td>
                 <td>${pos['Price']}</td>
                 <td style="color: {'green' if pos['Day Change %'] > 0 else 'red'};">{pos['Day Change %']:+.2f}%</td>
-                <td><strong>{pos['signal_count']}</strong></td>
+                <td><strong>{signal_weight}</strong></td>
                 <td>{'✓' if pos.get('MACD_Buy') else ''}</td>
                 <td>{'✓' if pos.get('BB_Buy') else ''}</td>
                 <td>{'✓' if pos.get('WillR_Buy') else ''}</td>
@@ -1008,6 +1031,98 @@ def main():
         print(f"  - Total PSAR buys checked: {len(all_buys)}")
     
     print("\n" + "=" * 100)
+    print()
+    
+    # Export CSV files for full dataset analysis
+    print("\n" + "=" * 100)
+    print("EXPORTING CSV FILES...")
+    print("=" * 100)
+    
+    import csv
+    csv_dir = '/mnt/user-data/outputs'
+    
+    # 1. Current PSAR Buy Signals (ALL, not just top 50)
+    if all_buys:
+        csv_path = f'{csv_dir}/current_psar_buys.csv'
+        with open(csv_path, 'w', newline='') as f:
+            fieldnames = ['Ticker', 'Company', 'Source', 'Price', 'Distance %', 'Day Change %', 
+                         'RSI', 'MACD_Buy', 'BB_Buy', 'WillR_Buy', 'Coppock_Buy', 'Ultimate_Buy',
+                         'Sector', 'Dividend Yield %']
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
+            writer.writeheader()
+            
+            # Sort by distance for export
+            sorted_buys = sorted(all_buys, key=lambda x: x.get('Distance %', 0), reverse=True)
+            writer.writerows(sorted_buys)
+        print(f"✓ Exported {len(all_buys)} PSAR buy signals to current_psar_buys.csv")
+    
+    # 2. Early Buy Signals (ALL, not just top 30)
+    if all_early:
+        csv_path = f'{csv_dir}/early_buy_signals.csv'
+        with open(csv_path, 'w', newline='') as f:
+            # Calculate signal weights first
+            for pos in all_early:
+                if 'signal_weight' not in pos:
+                    pos['signal_weight'] = calculate_signal_weight(pos)
+            
+            fieldnames = ['Ticker', 'Company', 'Source', 'Price', 'Day Change %', 'signal_weight',
+                         'RSI', 'MACD_Buy', 'BB_Buy', 'WillR_Buy', 'Coppock_Buy', 'Ultimate_Buy',
+                         'Sector']
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
+            writer.writeheader()
+            
+            # Sort by signal weight for export
+            sorted_early = sorted(all_early, key=lambda x: x.get('signal_weight', 0), reverse=True)
+            writer.writerows(sorted_early)
+        print(f"✓ Exported {len(all_early)} early signals to early_buy_signals.csv")
+    
+    # 3. New PSAR Entries (recently crossed into PSAR buy)
+    if changes['new_entries']:
+        csv_path = f'{csv_dir}/new_psar_entries.csv'
+        with open(csv_path, 'w', newline='') as f:
+            # Calculate signal weights first
+            for pos in changes['new_entries']:
+                if 'signal_weight' not in pos:
+                    pos['signal_weight'] = calculate_signal_weight(pos)
+            
+            fieldnames = ['Ticker', 'Company', 'Source', 'Price', 'Distance %', 'Day Change %',
+                         'signal_weight', 'RSI', 'MACD_Buy', 'BB_Buy', 'WillR_Buy', 
+                         'Coppock_Buy', 'Ultimate_Buy', 'Sector', 'Dividend Yield %']
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
+            writer.writeheader()
+            
+            # Sort by signal weight for export
+            sorted_new = sorted(changes['new_entries'], key=lambda x: x.get('signal_weight', 0), reverse=True)
+            writer.writerows(sorted_new)
+        print(f"✓ Exported {len(changes['new_entries'])} new entries to new_psar_entries.csv")
+    
+    # 4. Dividend PSAR Stocks
+    if dividend_psar_stocks:
+        csv_path = f'{csv_dir}/dividend_psar_stocks.csv'
+        with open(csv_path, 'w', newline='') as f:
+            fieldnames = ['Ticker', 'Company', 'Dividend Yield %', 'Price', 'Distance %', 
+                         'Day Change %', 'Sector', 'Source']
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
+            writer.writeheader()
+            
+            # Sort by dividend yield for export
+            sorted_div = sorted(dividend_psar_stocks, key=lambda x: x.get('Dividend Yield %', 0), reverse=True)
+            writer.writerows(sorted_div)
+        print(f"✓ Exported {len(dividend_psar_stocks)} dividend stocks to dividend_psar_stocks.csv")
+    
+    # 5. Recent Exits (7-day history)
+    if changes['recent_exits_7day']:
+        csv_path = f'{csv_dir}/recent_exits_7day.csv'
+        with open(csv_path, 'w', newline='') as f:
+            fieldnames = ['Ticker', 'Company', 'days_ago', 'hours_ago', 'exit_price', 
+                         'Price', 'Distance %', 'Day Change %', 'RSI', 'Sector', 'Source']
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
+            writer.writeheader()
+            writer.writerows(changes['recent_exits_7day'])
+        print(f"✓ Exported {len(changes['recent_exits_7day'])} recent exits to recent_exits_7day.csv")
+    
+    print("\nCSV files saved to /mnt/user-data/outputs/")
+    print("These files contain the COMPLETE dataset (not limited to top 50)")
     print()
     
     # Save current status with exit history
