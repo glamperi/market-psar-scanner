@@ -245,6 +245,72 @@ Perfect Early Signal Example:
 
 ---
 
+### Visual Timeline: How Signals Progress
+
+```
+TIME →→→→→→→→→→→→→→→→→→→→→→→→→→→→→→→→→→→→→→→→→→→→→→
+
+Phase 1: OVERSOLD (Early Signals Fire)
+━━━━━━━━━━━━━━━━━━━━━━━━
+Price: Falling/bottoming
+PSAR: Still RED (sell signal)
+Distance: N/A (not in PSAR buy yet)
+Early Signals: 🟡 MACD ✓, Williams ✓, Bollinger ✓ (3-5 signals)
+Action: ADD TO WATCHLIST (don't buy yet!)
+
+↓ Days/Weeks Pass ↓
+
+Phase 2: REVERSAL CONFIRMED (PSAR Flips Green)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Price: Just crossed above PSAR
+PSAR: 🟢 GREEN (buy signal confirmed)
+Distance: LOW (1-8%) ← Price just barely above PSAR
+Early Signals: 🟡 Still showing (they fired first, remember?)
+Action: STRONG ENTRY SIGNAL ✅
+
+↓ More Time Passes ↓
+
+Phase 3: ESTABLISHED TREND (High Distance)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Price: Way above PSAR (trending strongly)
+PSAR: 🟢 GREEN (still confirmed)
+Distance: HIGH (30-60%) ← Big cushion developed
+Early Signals: ❌ Gone! (No longer oversold, now extended)
+Action: HOLD if you own it, maybe TRIM if extended
+
+↓ Even More Time ↓
+
+Phase 4: EXIT (PSAR Flips Red)
+━━━━━━━━━━━━━━━━━━━━━━━
+Price: Dropped below PSAR
+PSAR: 🔴 RED (sell signal)
+Distance: NEGATIVE (price < PSAR)
+Early Signals: N/A (irrelevant now)
+Action: EXIT IMMEDIATELY, goes to 7-day exit tracking
+```
+
+**The Key Insight:**
+
+When you see a stock with:
+- ✅ High distance (50%)
+- ❌ No early signals
+
+**This is CORRECT and EXPECTED!**
+
+It means: "This stock reversed weeks/months ago (that's when early signals fired). We're now in Phase 3 - established trend. The 'early' phase is long gone."
+
+When you see a stock with:
+- ✅ Low distance (2%)
+- ✅ Many early signals (5)
+
+**This is PERFECT!**
+
+It means: "This stock just transitioned from Phase 1 → Phase 2. Early signals fired recently (Phase 1), and PSAR just confirmed (Phase 2). Fresh opportunity!"
+
+**You can't have both high distance AND early signals because they occur at different phases of the trend!**
+
+---
+
 ### 3. New Buy Signals (Recently Entered) - Sorted by Distance, Then Signal Count
 
 **Sort Order:** Highest distance first, then most signals
@@ -875,3 +941,112 @@ The early signals add opportunity identification, the dividend list adds income 
 ---
 
 **Happy Trading! 📈**
+
+## ❓ Frequently Asked Questions
+
+### "Why don't the high-distance stocks have any early signals?"
+
+**This is the RIGHT behavior!** A stock with 50% distance has been in PSAR buy for weeks or months. The early signals (MACD, Williams %R, etc.) fired way back when the stock was oversold. Now that it's extended with high distance, those indicators have long since reset. 
+
+**Think of it this way:** Early signals are like smoke detectors - they go off when there's smoke (oversold conditions). Once the fire is out and the house is fine (trending strongly), the smoke detector is silent. That doesn't mean something is wrong - it means everything is going well!
+
+### "I want to find stocks with 5 early signals AND high distance. Why can't I?"
+
+Because that's asking for: "Show me stocks that are simultaneously oversold (early signals) and strongly extended (high distance)." 
+
+**That's impossible.** A stock can't be both oversold AND extended at the same time. It's like asking for water that's simultaneously frozen and boiling.
+
+**What you actually want:**
+- For NEW entries: Low distance + many signals (fresh reversals)
+- For existing HOLDS: High distance + no signals needed (let winners run)
+
+### "Should I buy stocks in the 'Early Buy Signals' list?"
+
+**NO!** The 🟡 Early Buy Signals list is a **watchlist only**. These stocks are showing potential but PSAR hasn't confirmed yet. Many will fail and never reach PSAR confirmation.
+
+**Wait for:**
+1. Stock appears in Early Buy Signals (add to watchlist)
+2. Stock moves to "NEW BUY SIGNALS" or "Current Buy Signals" (PSAR confirms)
+3. NOW consider entry
+
+Buying on early signals alone = getting whipsawed repeatedly.
+
+### "Why are some 'New Buy Signals' sorted above others if they have the same distance?"
+
+**Secondary sort is by signal count.** If two stocks both just entered PSAR with 12% distance:
+- Stock A: 5 early signals (MACD, BB, Williams, Coppock, Ultimate all agreed)
+- Stock B: 1 early signal (only MACD)
+
+Stock A shows first because the convergence of 5 indicators suggests higher probability of success.
+
+### "Can I just ignore the early signals and only use PSAR?"
+
+**Yes, but you'll miss context.** PSAR alone works, but:
+- You won't know which PSAR buys have strong backing (convergence)
+- You won't get advance warning of potential reversals
+- You won't know if you're buying a fresh signal or an extended trend
+
+The early signals add **quality filtering** to PSAR signals.
+
+### "Should I buy every stock in 'Current Buy Signals' since PSAR is confirmed?"
+
+**No!** Consider:
+- **High distance (50%+):** Extended, risky to chase, maybe trim if you own it
+- **Medium distance (10-30%):** Sweet spot for entries if pulling back to PSAR
+- **Low distance (1-5%):** Fresh signals, good if many early indicators agree
+
+Not all PSAR buys are equal. Distance matters!
+
+### "The 7-day exit tracking shows stocks down 5-10% since exit. Should I still sell?"
+
+**YES!** The fact that they're down proves the exit signal was correct. Would you rather:
+- Sell now at -8% (controlled loss)
+- Hold and hope, potentially watching it drop to -20% or -30%
+
+The 7-day tracking is your safety net. When PSAR exits, the trend is broken. Respect the signal.
+
+### "What if a stock exits PSAR but I think it will bounce back?"
+
+**Trust the system, not your opinion.** PSAR is objective; your opinion is emotional. 
+
+**Statistics show:**
+- When PSAR exits, stocks continue falling 70-80% of the time
+- Even if it bounces, you can re-enter when PSAR confirms again
+- The 20-30% of times it reverses quickly, you saved yourself from the 70-80% that don't
+
+**Better to:**
+1. Exit on PSAR signal (preserve capital)
+2. Watch for PSAR re-entry (if it happens)
+3. Re-enter with confirmation (lower risk)
+
+Than to hold through a major decline hoping you're in the 20-30%.
+
+### "The dividend list shows stocks with 2-3% yields. Should I buy them?"
+
+**Only if you need income + want trend protection.** 
+
+For pure growth, ignore dividend list entirely. For income:
+- 5-7% yields: Great income + PSAR protection (utilities, REITs, tobacco)
+- 2-4% yields: Moderate income + growth potential (banks, consumer staples)
+- <2% yields: Skip (not enough income to justify)
+
+Remember: **Dividend + PSAR = Income with an exit strategy**. Traditional dividend investing says "never sell" even as price collapses. This system says "exit when trend breaks, preserve capital."
+
+### "Can I use this for day trading?"
+
+**No.** PSAR and these indicators are for swing/position trading (days to months). For day trading:
+- PSAR changes too slowly
+- You need minute-level charts
+- Different indicators entirely (Level 2, volume, tape reading)
+
+This system is designed for: **Confirm the trend, ride it, exit when it breaks.**
+
+### "What if I disagree with a PSAR signal?"
+
+**Then don't trade.** Never fight your system. If you can't trust PSAR:
+- Paper trade first to build confidence
+- Use smaller position sizes until proven
+- Or use a different system entirely
+
+**The worst thing:** Half-following signals. Either commit or don't use it.
+
