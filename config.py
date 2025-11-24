@@ -16,22 +16,61 @@ from io import StringIO
 def get_sp500_tickers():
     """Get S&P 500 tickers from Wikipedia"""
     try:
+        print("  Fetching S&P 500 from Wikipedia...")
         url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
         tables = pd.read_html(url)
         df = tables[0]
-        return df['Symbol'].str.replace('.', '-').tolist()
-    except:
-        return []
+        tickers = df['Symbol'].str.replace('.', '-').tolist()
+        print(f"  ✓ Got {len(tickers)} S&P 500 tickers")
+        return tickers
+    except Exception as e:
+        print(f"  ✗ Failed to fetch S&P 500: {e}")
+        print("  → Using fallback list...")
+        # Fallback to a static list of major S&P 500 stocks
+        return [
+            'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 'BRK-B',
+            'LLY', 'AVGO', 'JPM', 'V', 'UNH', 'XOM', 'MA', 'COST', 'HD', 'PG',
+            'JNJ', 'NFLX', 'BAC', 'ABBV', 'CVX', 'CRM', 'KO', 'MRK', 'WMT',
+            'AMD', 'PEP', 'TMO', 'CSCO', 'ACN', 'MCD', 'LIN', 'ABT', 'DHR',
+            'ADBE', 'INTC', 'DIS', 'CMCSA', 'NKE', 'VZ', 'TXN', 'WFC', 'PM',
+            'ORCL', 'QCOM', 'INTU', 'IBM', 'AMGN', 'HON', 'UNP', 'RTX', 'CAT',
+            'GE', 'AMAT', 'LOW', 'SPGI', 'MS', 'BA', 'ELV', 'NEE', 'BKNG',
+            'BLK', 'DE', 'AXP', 'GS', 'SYK', 'SBUX', 'TJX', 'MDT', 'GILD',
+            'MMC', 'LRCX', 'ADI', 'ADP', 'MDLZ', 'CVS', 'AMT', 'VRTX', 'PLD',
+            'REGN', 'CI', 'C', 'ISRG', 'ZTS', 'BMY', 'MO', 'SO', 'CB', 'DUK',
+            'BDX', 'SHW', 'SCHW', 'ETN', 'PNC', 'TMUS', 'NOC', 'BSX', 'EOG',
+            'CME', 'EQIX', 'APH', 'USB', 'ITW', 'COP', 'MCO', 'HCA', 'MMM',
+            'ICE', 'NSC', 'WM', 'PYPL', 'EMR', 'FCX', 'AON', 'TGT', 'PGR',
+            'FI', 'MU', 'PSA', 'SLB', 'MCK', 'APD', 'F', 'GM', 'JCI', 'FDX'
+        ]
 
 def get_nasdaq100_tickers():
     """Get NASDAQ 100 tickers from Wikipedia"""
     try:
+        print("  Fetching NASDAQ 100 from Wikipedia...")
         url = 'https://en.wikipedia.org/wiki/NASDAQ-100'
         tables = pd.read_html(url)
         df = tables[4]  # The main table
-        return df['Ticker'].tolist()
-    except:
-        return []
+        tickers = df['Ticker'].tolist()
+        print(f"  ✓ Got {len(tickers)} NASDAQ 100 tickers")
+        return tickers
+    except Exception as e:
+        print(f"  ✗ Failed to fetch NASDAQ 100: {e}")
+        print("  → Using fallback list...")
+        # Fallback to a static list of major NASDAQ 100 stocks
+        return [
+            'AAPL', 'MSFT', 'GOOGL', 'GOOG', 'AMZN', 'NVDA', 'META', 'TSLA',
+            'AVGO', 'COST', 'NFLX', 'AMD', 'PEP', 'CSCO', 'ADBE', 'TMUS',
+            'INTU', 'TXN', 'QCOM', 'CMCSA', 'AMGN', 'HON', 'AMAT', 'SBUX',
+            'PANW', 'ADP', 'GILD', 'VRTX', 'ADI', 'LRCX', 'REGN', 'ISRG',
+            'BKNG', 'MU', 'SNPS', 'KLAC', 'INTC', 'PYPL', 'CDNS', 'MELI',
+            'CRWD', 'ORLY', 'FTNT', 'MRVL', 'CTAS', 'DASH', 'MNST', 'WDAY',
+            'DXCM', 'ABNB', 'CHTR', 'NXPI', 'TTD', 'TEAM', 'PCAR', 'PAYX',
+            'IDXX', 'CPRT', 'ODFL', 'AZN', 'KDP', 'FAST', 'ROST', 'BKR',
+            'GEHC', 'EA', 'CTSH', 'VRSK', 'DDOG', 'EXC', 'XEL', 'KHC', 'ZS',
+            'FANG', 'CSGP', 'CCEP', 'ANSS', 'CDW', 'ON', 'BIIB', 'WBD', 'MDB',
+            'ILMN', 'GFS', 'MCHP', 'DLTR', 'WBA'
+        ]
 
 def get_russell1000_additional():
     """Get additional Russell 1000 stocks not in S&P 500"""
