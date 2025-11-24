@@ -337,6 +337,11 @@ def analyze_stock(ticker, ticker_sources):
         # Get additional data
         latest_close = df['Close'].iloc[-1]
         latest_psar = psar[-1]
+        
+        # Handle NaN in PSAR
+        if pd.isna(latest_psar) or pd.isna(latest_close) or latest_close == 0:
+            return None
+        
         distance_pct = ((latest_close - latest_psar) / latest_close) * 100
         change_pct = ((latest_close - df['Close'].iloc[-2]) / df['Close'].iloc[-2]) * 100
         
@@ -345,9 +350,16 @@ def analyze_stock(ticker, ticker_sources):
             info = stock.info
             company = info.get('longName', ticker)
             sector = info.get('sector', 'N/A')
+            dividend_yield = info.get('dividendYield', 0)
+            # Convert to percentage if it exists
+            if dividend_yield:
+                dividend_yield = round(dividend_yield * 100, 2)
+            else:
+                dividend_yield = 0
         except:
             company = ticker
             sector = 'N/A'
+            dividend_yield = 0
         
         # Get source
         source = ', '.join(ticker_sources.get(ticker, ['Unknown']))
@@ -361,6 +373,7 @@ def analyze_stock(ticker, ticker_sources):
             'PSAR': round(latest_psar, 2),
             'Distance %': round(distance_pct, 2),
             'Day Change %': round(change_pct, 2),
+            'Dividend Yield %': dividend_yield,
             'PSAR_Buy': bool(is_psar_buy),
             'MACD_Buy': bool(indicators['macd_buy']),
             'BB_Buy': bool(indicators['bb_buy']),
@@ -790,7 +803,7 @@ def format_alert_email(changes, all_buys, all_early):
         <p><em>Showing {len(top_early)} of {len(all_early)} total early signals</em></p>
         <table border="1" cellpadding="5" style="border-collapse: collapse;">
             <tr style="background-color: #FFFFE0;">
-                <th>Ticker</th><th>Company</th><th>Source</th><th>Price</th><th>Day Chg %</th><th>Signals</th><th>MACD</th><th>BB</th><th>Coppock</th><th>Ultimate</th><th>RSI</th>
+                <th>Ticker</th><th>Company</th><th>Source</th><th>Price</th><th>Day Chg %</th><th>Signals</th><th>MACD</th><th>BB</th><th>WillR</th><th>Coppock</th><th>Ultimate</th><th>RSI</th>
             </tr>
         """
         for pos in top_early:
@@ -804,9 +817,46 @@ def format_alert_email(changes, all_buys, all_early):
                 <td><strong>{pos['signal_count']}</strong></td>
                 <td>{'✓' if pos.get('MACD_Buy') else ''}</td>
                 <td>{'✓' if pos.get('BB_Buy') else ''}</td>
+                <td>{'✓' if pos.get('WillR_Buy') else ''}</td>
                 <td>{'✓' if pos.get('Coppock_Buy') else ''}</td>
                 <td>{'✓' if pos.get('Ultimate_Buy') else ''}</td>
                 <td>{pos.get('RSI', 'N/A')}</td>
+            </tr>
+            """
+        html += "</table><br>"
+    
+    # TOP DIVIDEND STOCKS (>1% yield with PSAR buy or early entry signals)
+    dividend_stocks = []
+    for pos in all_buys + all_early:
+        div_yield = pos.get('Dividend Yield %', 0)
+        if div_yield and div_yield > 1.0:
+            dividend_stocks.append(pos)
+    
+    if dividend_stocks:
+        # Sort by dividend yield descending
+        top_dividends = sorted(dividend_stocks, key=lambda x: x.get('Dividend Yield %', 0), reverse=True)[:20]
+        html += f"""
+        <h3>💰 TOP DIVIDEND STOCKS (Yield >1% with Buy Signals)</h3>
+        <p><em>Showing {len(top_dividends)} of {len(dividend_stocks)} dividend-paying stocks with PSAR buy or early signals</em></p>
+        <table border="1" cellpadding="5" style="border-collapse: collapse;">
+            <tr style="background-color: #90EE90;">
+                <th>Ticker</th><th>Company</th><th>Div Yield %</th><th>Price</th><th>Status</th><th>Distance %</th><th>Day Chg %</th><th>RSI</th><th>Sector</th>
+            </tr>
+        """
+        for pos in top_dividends:
+            status = "🟢 PSAR Buy" if pos.get('PSAR_Buy') else "🟡 Early Signal"
+            status_color = "#90EE90" if pos.get('PSAR_Buy') else "#FFFFE0"
+            html += f"""
+            <tr>
+                <td><strong>{pos['Ticker']}</strong></td>
+                <td>{pos.get('Company', 'N/A')[:30]}</td>
+                <td style="background-color: #FFD700;"><strong>{pos.get('Dividend Yield %', 0):.2f}%</strong></td>
+                <td>${pos['Price']}</td>
+                <td style="background-color: {status_color};">{status}</td>
+                <td>{pos.get('Distance %', 'N/A')}%</td>
+                <td style="color: {'green' if pos['Day Change %'] > 0 else 'red'};">{pos['Day Change %']:+.2f}%</td>
+                <td>{pos.get('RSI', 'N/A')}</td>
+                <td><small>{pos.get('Sector', 'N/A')[:20]}</small></td>
             </tr>
             """
         html += "</table><br>"
