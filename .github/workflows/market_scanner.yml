@@ -1,0 +1,72 @@
+name: Market PSAR Scanner Automation
+
+on:
+  schedule:
+    - cron: '0 15 * * *'
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Set up Python 3.13
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.13'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install yfinance pandas numpy lxml html5lib beautifulsoup4
+    
+    - name: Restore scan history
+      uses: actions/cache@v3
+      with:
+        path: |
+          scan_status.json
+          scan_history/
+        key: scan-data-${{ github.run_number }}
+        restore-keys: scan-data-
+    
+    - name: Run Market Scanner
+      env:
+        GMAIL_EMAIL: ${{ secrets.GMAIL_EMAIL }}
+        GMAIL_PASSWORD: ${{ secrets.GMAIL_PASSWORD }}
+        RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+      run: python market_scanner.py
+    
+    - name: Save scan history
+      if: always()
+      run: |
+        mkdir -p scan_history
+        TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+        if [ -f scan_status.json ]; then
+          cp scan_status.json "scan_history/scan_status_${TIMESTAMP}.json"
+        fi
+        cd scan_history
+        ls -t scan_status_*.json | tail -n +15 | xargs -r rm
+    
+    - name: Commit history
+      if: always()
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git add scan_status.json scan_history/ || true
+        git commit -m "Update market scan: $(date)" || true
+        git push || true
+    
+    - name: Upload results
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: market-scan-results-${{ github.run_number }}
+        path: |
+          scan_status.json
+        retention-days: 7
