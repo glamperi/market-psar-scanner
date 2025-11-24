@@ -17,7 +17,7 @@ import numpy as np
 from datetime import datetime
 import warnings
 import json
-import os # ALREADY IMPORTED: Used for the fix
+import os
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -557,8 +557,6 @@ def detect_changes(previous, current):
     
     return changes
 
-# [CONTINUED IN NEXT FILE DUE TO LENGTH]
-
 # =============================================================================
 # EMAIL ALERTS
 # =============================================================================
@@ -1039,17 +1037,13 @@ def main():
     print("=" * 100)
     
     import csv
-    # --- FIX APPLIED HERE ---
-    # Change the absolute path to a relative path
-    csv_dir = 'outputs' 
-    
-    # Create the directory if it doesn't exist
+    # --- FIX: Use relative output directory ---
+    csv_dir = 'outputs'
     os.makedirs(csv_dir, exist_ok=True)
-    # --- END FIX ---
     
     # 1. Current PSAR Buy Signals (ALL, not just top 50)
     if all_buys:
-        csv_path = os.path.join(csv_dir, 'current_psar_buys.csv') # FIXED LINE
+        csv_path = os.path.join(csv_dir, 'current_psar_buys.csv')
         with open(csv_path, 'w', newline='') as f:
             fieldnames = ['Ticker', 'Company', 'Source', 'Price', 'Distance %', 'Day Change %', 
                          'RSI', 'MACD_Buy', 'BB_Buy', 'WillR_Buy', 'Coppock_Buy', 'Ultimate_Buy',
@@ -1064,7 +1058,7 @@ def main():
     
     # 2. Early Buy Signals (ALL, not just top 30)
     if all_early:
-        csv_path = os.path.join(csv_dir, 'early_buy_signals.csv') # FIXED LINE
+        csv_path = os.path.join(csv_dir, 'early_buy_signals.csv')
         with open(csv_path, 'w', newline='') as f:
             # Calculate signal weights first
             for pos in all_early:
@@ -1084,7 +1078,7 @@ def main():
     
     # 3. New PSAR Entries (recently crossed into PSAR buy)
     if changes['new_entries']:
-        csv_path = os.path.join(csv_dir, 'new_psar_entries.csv') # FIXED LINE
+        csv_path = os.path.join(csv_dir, 'new_psar_entries.csv')
         with open(csv_path, 'w', newline='') as f:
             # Calculate signal weights first
             for pos in changes['new_entries']:
@@ -1104,7 +1098,7 @@ def main():
     
     # 4. Dividend PSAR Stocks
     if dividend_psar_stocks:
-        csv_path = os.path.join(csv_dir, 'dividend_psar_stocks.csv') # FIXED LINE
+        csv_path = os.path.join(csv_dir, 'dividend_psar_stocks.csv')
         with open(csv_path, 'w', newline='') as f:
             fieldnames = ['Ticker', 'Company', 'Dividend Yield %', 'Price', 'Distance %', 
                          'Day Change %', 'Sector', 'Source']
@@ -1118,7 +1112,7 @@ def main():
     
     # 5. Recent Exits (7-day history)
     if changes['recent_exits_7day']:
-        csv_path = os.path.join(csv_dir, 'recent_exits_7day.csv') # FIXED LINE
+        csv_path = os.path.join(csv_dir, 'recent_exits_7day.csv')
         with open(csv_path, 'w', newline='') as f:
             fieldnames = ['Ticker', 'Company', 'days_ago', 'hours_ago', 'exit_price', 
                          'Price', 'Distance %', 'Day Change %', 'RSI', 'Sector', 'Source']
@@ -1127,7 +1121,7 @@ def main():
             writer.writerows(changes['recent_exits_7day'])
         print(f"✓ Exported {len(changes['recent_exits_7day'])} recent exits to recent_exits_7day.csv")
     
-    print(f"\nCSV files saved to {csv_dir}/") # FIXED LINE in print statement
+    print(f"\nCSV files saved to {csv_dir}/")
     print("These files contain the COMPLETE dataset (not limited to top 50)")
     print()
     
@@ -1144,4 +1138,32 @@ def main():
     alert_subject = f"📊 Market Scanner Report - {datetime.now().strftime('%Y-%m-%d')}"
     
     if changes['new_entries'] and ALERT_ON_ENTRY:
-        should_
+        should_alert = True
+        alert_subject = f"🟢 {len(changes['new_entries'])} New PSAR Buy Signals! - {datetime.now().strftime('%Y-%m-%d')}"
+    
+    if changes['new_exits'] and ALERT_ON_EXIT:
+        should_alert = True
+        if "New PSAR Buy" not in alert_subject:
+            alert_subject = f"🔴 {len(changes['new_exits'])} PSAR Exit Signals! - {datetime.now().strftime('%Y-%m-%d')}"
+    
+    if ALERT_DAILY_SUMMARY or should_alert or len(previous_status) == 0:
+        email_body = format_alert_email(changes, all_buys, all_early)
+        send_email_alert(alert_subject, email_body)
+    else:
+        print("No significant changes detected, email skipped")
+    
+    # Print summary
+    print()
+    print("=" * 100)
+    print("SUMMARY:")
+    print("=" * 100)
+    print(f"🟢 PSAR Buy Signals: {len(all_buys)} stocks")
+    print(f"🟡 Early Buy Signals: {len(all_early)} stocks")
+    print(f"🆕 New Entries: {len(changes['new_entries'])} stocks")
+    print(f"⚠️  New Exits: {len(changes['new_exits'])} stocks")
+    print("=" * 100)
+    
+    print("\n✓ Done!")
+
+if __name__ == "__main__":
+    main()
