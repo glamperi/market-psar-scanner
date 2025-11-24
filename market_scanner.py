@@ -422,13 +422,29 @@ def save_current_status(results_dict):
         json.dump(serializable_dict, f, indent=2)
 
 def detect_changes(previous, current):
-    """Detect entry/exit changes"""
+    """Detect entry/exit changes and maintain 7-day exit history"""
+    from datetime import datetime, timedelta
+    
     changes = {
         'new_entries': [],
         'new_exits': [],
         'still_buy': [],
-        'still_sell': []
+        'still_sell': [],
+        'recent_exits_7day': []  # New: exits from last 7 days
     }
+    
+    # Get current timestamp
+    current_time = datetime.now()
+    
+    # Load exit history
+    exit_history = previous.get('_exit_history', {})
+    
+    # Clean old exits (older than 7 days)
+    cleaned_history = {}
+    for ticker, exit_data in exit_history.items():
+        exit_time = datetime.fromisoformat(exit_data['exit_time'])
+        if (current_time - exit_time).days < 7:
+            cleaned_history[ticker] = exit_data
     
     for ticker, curr_data in current.items():
         if curr_data is None:
@@ -440,12 +456,45 @@ def detect_changes(previous, current):
         
         if curr_is_buy and not prev_is_buy:
             changes['new_entries'].append(curr_data)
+            # Remove from exit history if re-entering
+            cleaned_history.pop(ticker, None)
         elif not curr_is_buy and prev_is_buy:
+            # New exit - add to both new_exits and exit_history
             changes['new_exits'].append(curr_data)
+            cleaned_history[ticker] = {
+                'exit_time': current_time.isoformat(),
+                'exit_price': curr_data['Price'],
+                'data': curr_data
+            }
         elif curr_is_buy:
             changes['still_buy'].append(curr_data)
         else:
             changes['still_sell'].append(curr_data)
+    
+    # Build recent exits list with days ago info
+    for ticker, exit_info in cleaned_history.items():
+        exit_time = datetime.fromisoformat(exit_info['exit_time'])
+        days_ago = (current_time - exit_time).days
+        hours_ago = int((current_time - exit_time).total_seconds() / 3600)
+        
+        # Get current data if available
+        exit_data = exit_info['data'].copy()
+        if ticker in current:
+            # Update with current price/distance
+            exit_data.update(current[ticker])
+        
+        exit_data['days_ago'] = days_ago
+        exit_data['hours_ago'] = hours_ago
+        exit_data['exit_time'] = exit_info['exit_time']
+        exit_data['exit_price'] = exit_info['exit_price']
+        
+        changes['recent_exits_7day'].append(exit_data)
+    
+    # Sort by most recent first
+    changes['recent_exits_7day'].sort(key=lambda x: x['exit_time'], reverse=True)
+    
+    # Store cleaned history back
+    changes['_exit_history'] = cleaned_history
     
     return changes
 
@@ -458,6 +507,11 @@ def detect_changes(previous, current):
 def send_email_alert(subject, body):
     """Send email alert"""
     try:
+        print(f"Attempting to send email...")
+        print(f"  From: {EMAIL_CONFIG['sender_email']}")
+        print(f"  To: {EMAIL_CONFIG['recipient_email']}")
+        print(f"  Subject: {subject}")
+        
         msg = MIMEMultipart()
         msg['From'] = EMAIL_CONFIG['sender_email']
         msg['To'] = EMAIL_CONFIG['recipient_email']
@@ -465,16 +519,24 @@ def send_email_alert(subject, body):
         
         msg.attach(MIMEText(body, 'html'))
         
+        print(f"  Connecting to {EMAIL_CONFIG['smtp_server']}:{EMAIL_CONFIG['smtp_port']}...")
         server = smtplib.SMTP(EMAIL_CONFIG['smtp_server'], EMAIL_CONFIG['smtp_port'])
         server.starttls()
+        
+        print(f"  Logging in...")
         server.login(EMAIL_CONFIG['sender_email'], EMAIL_CONFIG['sender_password'])
+        
+        print(f"  Sending message...")
         server.send_message(msg)
         server.quit()
         
-        print(f"✓ Email sent: {subject}")
+        print(f"✓ Email sent successfully: {subject}")
         return True
     except Exception as e:
-        print(f"✗ Email failed: {e}")
+        print(f"✗ Email failed with error: {e}")
+        print(f"  Error type: {type(e).__name__}")
+        import traceback
+        traceback.print_exc()
         return False
 
 def format_alert_email(changes, all_buys, all_early):
@@ -487,6 +549,54 @@ def format_alert_email(changes, all_buys, all_early):
         <hr>
     """
     
+    # NEW: 7-Day Exit History (always show if any exist)
+    if changes['recent_exits_7day']:
+        html += """
+        <div style="background-color: #FFE0E0; border: 3px solid #FF0000; padding: 15px; margin: 10px 0;">
+            <h2 style="color: red;">⚠️ RECENT EXITS: Stocks That Left PSAR Buy in Last 7 Days ⚠️</h2>
+            <p style="color: #8B0000;"><strong>Don't miss these sell signals! Check if you own any of these stocks.</strong></p>
+            <table border="1" cellpadding="5" style="border-collapse: collapse; width: 100%;">
+                <tr style="background-color: #FFB6C1;">
+                    <th>Ticker</th><th>Company</th><th>Exited</th><th>Exit Price</th><th>Current Price</th><th>Change Since Exit</th><th>Distance to PSAR</th><th>Day Chg %</th><th>RSI</th>
+                </tr>
+        """
+        
+        for pos in changes['recent_exits_7day']:
+            days_ago = pos['days_ago']
+            hours_ago = pos['hours_ago']
+            
+            if days_ago == 0:
+                time_str = f"{hours_ago}h ago" if hours_ago > 0 else "Just now"
+            elif days_ago == 1:
+                time_str = "Yesterday"
+            else:
+                time_str = f"{days_ago} days ago"
+            
+            exit_price = pos.get('exit_price', pos['Price'])
+            current_price = pos['Price']
+            change_since_exit = ((current_price - exit_price) / exit_price * 100) if exit_price else 0
+            
+            html += f"""
+            <tr>
+                <td><strong>{pos['Ticker']}</strong></td>
+                <td>{pos.get('Company', 'N/A')[:25]}</td>
+                <td><strong style="color: #8B0000;">{time_str}</strong></td>
+                <td>${exit_price:.2f}</td>
+                <td>${current_price:.2f}</td>
+                <td style="color: {'green' if change_since_exit > 0 else 'red'};">{change_since_exit:+.2f}%</td>
+                <td style="color: red;">{pos['Distance %']:.2f}%</td>
+                <td style="color: {'green' if pos['Day Change %'] > 0 else 'red'};">{pos['Day Change %']:+.2f}%</td>
+                <td>{pos.get('RSI', 'N/A')}</td>
+            </tr>
+            """
+        
+        html += """
+            </table>
+            <p style="margin-top: 10px; color: #8B0000;"><em>💡 Tip: This list shows all stocks that exited PSAR buy in the last 7 days. If you own any, consider selling!</em></p>
+        </div>
+        <hr>
+        """
+    
     # WARNING: Recent exits
     if changes['new_exits']:
         html += """
@@ -497,7 +607,7 @@ def format_alert_email(changes, all_buys, all_early):
                     <th>Ticker</th><th>Company</th><th>Source</th><th>Price</th><th>PSAR</th><th>Distance %</th><th>Day Change %</th><th>MACD</th><th>RSI</th>
                 </tr>
         """
-        for pos in sorted(changes['new_exits'], key=lambda x: x.get('Day Change %', 0)):
+        for pos in sorted(changes['new_exits'], key=lambda x: x.get('Distance %', 0)):
             html += f"""
             <tr>
                 <td><strong>{pos['Ticker']}</strong></td>
@@ -625,13 +735,17 @@ def format_alert_email(changes, all_buys, all_early):
             <td><strong>⚠️ New Exits (Since Last Scan)</strong></td>
             <td><strong>{len(changes['new_exits'])}</strong></td>
         </tr>
+        <tr style="background-color: #FFE0E0;">
+            <td><strong>🔴 Recent Exits (Last 7 Days)</strong></td>
+            <td><strong>{len(changes['recent_exits_7day'])}</strong></td>
+        </tr>
     </table>
     <br>
     """
     
     # ALL PSAR Buy Signals (limit to top 50 for email)
     if all_buys:
-        top_buys = sorted(all_buys, key=lambda x: x['Distance %'])[:50]
+        top_buys = sorted(all_buys, key=lambda x: x['Distance %'], reverse=True)[:50]
         html += f"""
         <h3>🟢 CURRENT BUY SIGNALS (Top 50 by Distance to PSAR)</h3>
         <p><em>Showing {len(top_buys)} of {len(all_buys)} total PSAR buy signals</em></p>
@@ -768,10 +882,12 @@ def main():
     
     print(f"  New buy signals: {len(changes['new_entries'])}")
     print(f"  New sell signals: {len(changes['new_exits'])}")
+    print(f"  Recent exits (7 days): {len(changes['recent_exits_7day'])}")
     print(f"  Total PSAR buys: {len(all_buys)}")
     print(f"  Total early signals: {len(all_early)}")
     
-    # Save current status
+    # Save current status with exit history
+    results_dict['_exit_history'] = changes.get('_exit_history', {})
     save_current_status(results_dict)
     
     # Send email alert
