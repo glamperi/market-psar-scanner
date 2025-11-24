@@ -1,21 +1,26 @@
-Symbol
-CLS
-APH
-PLTR
-MDB
-LLY
-PWR
-MEDP
-KGC
-ISRG
-GOOG
-GOOGL
-TEL
-B
-UTHR
-BE
-WDC
-AU
-LITE
-AVGO
-RGLD
+Symbol,Company,Composite,EPS,RS,SMR,OffHigh,Price,Vol
+CLS,CELESTICA INC,99.0,99.0,98.0,A,-11.6,321.27,55.0
+APH,AMPHENOL CORP CL A,99.0,99.0,94.0,A,-4.6,137.47,-12.0
+PLTR,Palantir TechnologiesClA,99.0,99.0,93.0,A,-21.8,165.05,-21.0
+MDB,Mongodb Inc Cl A,98.0,99.0,92.0,A,-15.2,326.26,-17.0
+LLY,Eli Lilly & Co,99.0,98.0,93.0,A,0.0,1065.37,-16.0
+PWR,QUANTA SERVICES INC,98.0,98.0,90.0,A,-5.2,443.83,-30.0
+MEDP,Medpace Holdings Inc,99.0,97.0,95.0,A,-1.2,616.08,27.0
+KGC,KINROSS GOLD CORP,99.0,96.0,96.0,A,-6.9,25.83,-51.0
+ISRG,INTUITIVE SURGICAL INC,99.0,96.0,72.0,A,-7.5,569.63,-44.0
+GOOG,Alphabet Inc Cl C,99.0,92.0,95.0,A,3.7,318.87,77.0
+GOOGL,Alphabet Inc Cl A,99.0,92.0,95.0,A,3.9,318.94,75.0
+TEL,Te Connectivity Ltd,99.0,92.0,89.0,A,-12.2,220.06,-30.0
+B,Barrick Mining,99.0,89.0,96.0,A,1.8,39.26,-8.0
+UTHR,UNITED THERAPEUTICS CORP,98.0,87.0,93.0,A,-1.4,481.46,-40.0
+BE,Bloom Energy Corp Cl A,98.0,81.0,99.0,B,-34.9,95.26,-2.0
+WDC,WESTERN DIGITAL CORP,99.0,81.0,98.0,A,-15.2,151.37,-20.0
+AU,ANGLOGOLD ASHANTI ADS,99.0,81.0,97.0,A,-2.7,83.31,-24.0
+LITE,Lumentum Holdings Inc,99.0,74.0,99.0,A,5.6,297.46,72.0
+AVGO,Broadcom Inc,99.0,99.0,94.0,A,-2.2,380.2,42.0
+RGLD,ROYAL GOLD INC,99.0,95.0,79.0,A,-9.0,190.5,-68.0
+"Screen results as of 3:51 PM Eastern, Monday, November 24, 2025",,,,,,,,
+"Data provided by William O'Neil + Co., Inc. © 2025. All Rights Reserved.",,,,,,,,
+"Investor's Business Daily is a registered trademark of Investor's Business Daily, Inc.",,,,,,,,
+Reproduction or redistribution other than for personal non-commercial use is prohibited.,,,,,,,,
+Provided by Nasdaq Last Sale. Real-time quote and/or trade prices are not sourced from all markets.,,,,,,,,

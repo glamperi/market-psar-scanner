@@ -40,6 +40,56 @@ from config import (
 print("Market Scanner - Using manual indicator calculations")
 
 # =============================================================================
+# DIVIDEND YIELD CALCULATION
+# =============================================================================
+
+def get_dividend_yield(stock, df):
+    """
+    Calculate dividend yield from actual dividend payments
+    More reliable than stock.info['dividendYield'] which often returns 0
+    
+    Args:
+        stock: yfinance Ticker object
+        df: DataFrame with price history
+        
+    Returns:
+        float: Dividend yield as percentage (e.g., 5.25 for 5.25%)
+    """
+    try:
+        # Get dividend history
+        dividends = stock.dividends
+        
+        if dividends is None or len(dividends) == 0:
+            return 0.0
+        
+        # Filter to last 12 months
+        from datetime import datetime, timedelta
+        one_year_ago = datetime.now() - timedelta(days=365)
+        recent_divs = dividends[dividends.index > one_year_ago]
+        
+        if len(recent_divs) == 0:
+            return 0.0
+        
+        # Sum all dividends from last 12 months
+        annual_dividend = float(recent_divs.sum())
+        
+        # Get current price
+        current_price = float(df['Close'].iloc[-1])
+        
+        if current_price <= 0:
+            return 0.0
+        
+        # Calculate yield as percentage
+        dividend_yield = (annual_dividend / current_price) * 100
+        
+        # Return rounded to 2 decimal places
+        return round(dividend_yield, 2)
+        
+    except Exception:
+        # Silently return 0 if any error
+        return 0.0
+
+# =============================================================================
 # SIGNAL WEIGHT CALCULATION
 # =============================================================================
 
@@ -344,7 +394,7 @@ def calculate_all_indicators(df):
 # STOCK ANALYSIS
 # =============================================================================
 
-def analyze_stock(ticker, ticker_sources):
+def analyze_stock(ticker, ticker_sources, ibd_stats=None):
     """Analyze stock with all indicators"""
     try:
         stock = yf.Ticker(ticker)
@@ -388,23 +438,20 @@ def analyze_stock(ticker, ticker_sources):
             info = stock.info
             company = info.get('longName', ticker)
             sector = info.get('sector', 'N/A')
-            dividend_yield = info.get('dividendYield', 0)
-            # yfinance returns dividend yield in inconsistent formats
-            # Normalize to percentage (e.g., 7.29 for 7.29%)
-            if dividend_yield and dividend_yield > 0:
-                # If > 1, it's likely in basis points or needs normalization
-                if dividend_yield > 1:
-                    dividend_yield = dividend_yield / 100
-                dividend_yield = round(dividend_yield, 2)
-            else:
-                dividend_yield = 0
         except:
             company = ticker
             sector = 'N/A'
-            dividend_yield = 0
+        
+        # Calculate dividend yield from actual dividend data (more reliable than .info)
+        dividend_yield = get_dividend_yield(stock, df)
         
         # Get source
         source = ', '.join(ticker_sources.get(ticker, ['Unknown']))
+        
+        # Get IBD stats if available
+        ibd_data = {}
+        if ibd_stats and ticker in ibd_stats:
+            ibd_data = ibd_stats[ticker]
         
         return {
             'Ticker': ticker,
@@ -428,6 +475,18 @@ def analyze_stock(ticker, ticker_sources):
             'RSI': round(indicators['rsi'], 2) if indicators['rsi'] else None,
             'Stoch': round(indicators['stoch'], 2) if indicators['stoch'] else None,
             'WillR': round(indicators['willr'], 2) if indicators['willr'] else None,
+            # IBD Stats
+            'IBD_Composite': ibd_data.get('Composite', 'N/A'),
+            'IBD_EPS': ibd_data.get('EPS', 'N/A'),
+            'IBD_RS': ibd_data.get('RS', 'N/A'),
+            'IBD_GroupRS': ibd_data.get('GroupRS', 'N/A'),
+            'IBD_SMR': ibd_data.get('SMR', 'N/A'),
+            'IBD_AccDis': ibd_data.get('AccDis', 'N/A'),
+            'IBD_OffHigh': ibd_data.get('OffHigh', 'N/A'),
+            'IBD_BuyPoint': ibd_data.get('BuyPoint', 'N/A'),
+            'IBD_Comment': ibd_data.get('Comment', ''),
+            'IBD_List': ibd_data.get('IBD_List', ''),
+        }
             'Coppock': round(indicators['coppock'], 2) if indicators['coppock'] else None,
             'Ultimate': round(indicators['ultimate'], 2) if indicators['ultimate'] else None
         }
@@ -751,7 +810,7 @@ def format_alert_email(changes, all_buys, all_early):
         <h3 style="color: green;">🟢 NEW BUY SIGNALS (Recently Entered PSAR Buy)</h3>
         <table border="1" cellpadding="5" style="border-collapse: collapse;">
             <tr style="background-color: #90EE90;">
-                <th>Ticker</th><th>Company</th><th>Source</th><th>Price</th><th>Distance %</th><th>Day Chg %</th><th>Signal Weight</th><th>MACD</th><th>BB</th><th>WillR</th><th>Coppock</th><th>Ultimate</th><th>RSI</th>
+                <th>Ticker</th><th>Company</th><th>Price</th><th>Dist %</th><th>Sig Wt</th><th>Comp</th><th>RS</th><th>AccDis</th><th>Buy Pt</th><th>MACD</th><th>BB</th><th>WillR</th><th>Coppock</th><th>Ult</th>
             </tr>
         """
         # Calculate signal weight for each new entry
@@ -765,21 +824,38 @@ def format_alert_email(changes, all_buys, all_early):
         
         for pos in sorted_entries:
             signal_weight = pos.get('signal_weight', 0)
+            
+            # Get IBD stats
+            comp = pos.get('IBD_Composite', 'N/A')
+            rs = pos.get('IBD_RS', 'N/A')
+            accdis = pos.get('IBD_AccDis', 'N/A')
+            buy_pt = pos.get('IBD_BuyPoint', 'N/A')
+            
+            # Format buy point
+            if buy_pt != 'N/A' and buy_pt != '':
+                try:
+                    buy_pt_formatted = f"${float(buy_pt):.2f}"
+                except:
+                    buy_pt_formatted = str(buy_pt)
+            else:
+                buy_pt_formatted = '-'
+            
             html += f"""
             <tr>
                 <td><strong>{pos['Ticker']}</strong></td>
-                <td>{pos.get('Company', 'N/A')[:30]}</td>
-                <td><small>{pos.get('Source', 'N/A')[:20]}</small></td>
+                <td>{pos.get('Company', 'N/A')[:25]}</td>
                 <td>${pos['Price']}</td>
                 <td>{pos['Distance %']}%</td>
-                <td style="color: {'green' if pos['Day Change %'] > 0 else 'red'};">{pos['Day Change %']:+.2f}%</td>
                 <td><strong>{signal_weight}</strong></td>
+                <td style="background-color: {'#90EE90' if comp not in ['N/A', ''] and float(comp) >= 90 else 'white' if comp not in ['N/A', ''] else '#F0F0F0'};">{comp}</td>
+                <td style="background-color: {'#90EE90' if rs not in ['N/A', ''] and float(rs) >= 90 else 'white' if rs not in ['N/A', ''] else '#F0F0F0'};">{rs}</td>
+                <td>{accdis}</td>
+                <td><small>{buy_pt_formatted}</small></td>
                 <td>{'✓' if pos.get('MACD_Buy') else ''}</td>
                 <td>{'✓' if pos.get('BB_Buy') else ''}</td>
                 <td>{'✓' if pos.get('WillR_Buy') else ''}</td>
                 <td>{'✓' if pos.get('Coppock_Buy') else ''}</td>
                 <td>{'✓' if pos.get('Ultimate_Buy') else ''}</td>
-                <td>{pos.get('RSI', 'N/A')}</td>
             </tr>
             """
         html += "</table><br><hr>"
@@ -938,7 +1014,8 @@ def main():
     print()
     
     # Get all tickers
-    all_tickers, ticker_sources = get_all_tickers()
+    # Get all tickers with IBD stats
+    all_tickers, ticker_sources, ibd_stats = get_all_tickers()
     
     print(f"\nScanning {len(all_tickers)} stocks from broad market...")
     print("This will take 10-20 minutes...")
@@ -952,7 +1029,7 @@ def main():
         if i % 50 == 0 or i == total:
             print(f"Progress: {i}/{total} ({(i/total)*100:.1f}%)")
         
-        result = analyze_stock(ticker, ticker_sources)
+        result = analyze_stock(ticker, ticker_sources, ibd_stats)
         if result:
             results.append(result)
             results_dict[ticker] = result

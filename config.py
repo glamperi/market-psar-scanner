@@ -61,6 +61,7 @@ def get_all_tickers():
     """Fetches all stock tickers from CSV files located in the script directory."""
     all_tickers = set()
     ticker_sources = {}
+    ibd_stats = {}  # NEW: Store IBD ratings and stats
 
     # Get the directory where this script (config.py) is located
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -106,7 +107,7 @@ def get_all_tickers():
             # Only warn if it's not the standard indices (optional)
             pass
 
-    # 2. IBD Lists
+    # 2. IBD Lists (with enhanced stats)
     ibd_list_names = ['ibd_50', 'ibd_bigcap20', 'ibd_ipo', 'ibd_spotlight', 'ibd_sector']
     
     print("Checking for IBD CSV files...")
@@ -117,7 +118,8 @@ def get_all_tickers():
         if os.path.exists(csv_path):
             try:
                 df = pd.read_csv(csv_path)
-                # Assume 'Symbol' is the column name for IBD lists
+                
+                # Assume 'Symbol' is the column name
                 col_name = 'Symbol' if 'Symbol' in df.columns else df.columns[0]
                 
                 tickers = df[col_name].dropna().astype(str).tolist()
@@ -127,8 +129,33 @@ def get_all_tickers():
                 print(f"  [OK] Found {filename} ({len(tickers)} stocks)")
                 
                 source_name = list_name.replace('ibd_', '').upper()
-                for t in tickers:
-                    ticker_sources.setdefault(t, []).append(f"IBD {source_name}")
+                
+                # Extract IBD stats for each ticker
+                for idx, row in df.iterrows():
+                    ticker = str(row.get(col_name, '')).strip()
+                    if not ticker:
+                        continue
+                    
+                    # Store all IBD stats
+                    ibd_stats[ticker] = {
+                        'Company': row.get('Company', 'N/A'),
+                        'Composite': row.get('Composite', 'N/A'),
+                        'EPS': row.get('EPS', 'N/A'),
+                        'RS': row.get('RS', 'N/A'),
+                        'GroupRS': row.get('GroupRS', 'N/A'),
+                        'SMR': row.get('SMR', 'N/A'),
+                        'AccDis': row.get('AccDis', 'N/A'),
+                        'OffHigh': row.get('OffHigh', 'N/A'),
+                        'Price_IBD': row.get('Price', 'N/A'),
+                        'Day50': row.get('Day50', 'N/A'),
+                        'Vol': row.get('Vol', 'N/A'),
+                        'BuyPoint': row.get('BuyPoint', 'N/A'),  # If you add this column
+                        'Comment': row.get('Comment', ''),        # If you add this column
+                        'IBD_List': f"IBD {source_name}"
+                    }
+                    
+                    ticker_sources.setdefault(ticker, []).append(f"IBD {source_name}")
+                    
             except Exception as e:
                 print(f"  [FAIL] Failed to read {filename}: {e}")
 
@@ -146,4 +173,6 @@ def get_all_tickers():
     all_tickers.discard('Symbol')
     all_tickers.discard('Ticker')
     
-    return list(all_tickers), ticker_sources
+    print(f"\n✓ Loaded {len(ibd_stats)} stocks with IBD stats")
+    
+    return list(all_tickers), ticker_sources, ibd_stats
