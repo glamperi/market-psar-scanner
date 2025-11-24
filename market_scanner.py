@@ -468,6 +468,10 @@ def detect_changes(previous, current):
             continue
             
         prev_data = previous.get(ticker, {})
+        # Handle case where prev_data might be None (from NaN PSAR in previous scan)
+        if prev_data is None:
+            prev_data = {}
+        
         prev_is_buy = prev_data.get('PSAR_Buy', False)
         curr_is_buy = curr_data['PSAR_Buy']
         
