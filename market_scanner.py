@@ -487,9 +487,6 @@ def analyze_stock(ticker, ticker_sources, ibd_stats=None):
             'IBD_Comment': ibd_data.get('Comment', ''),
             'IBD_List': ibd_data.get('IBD_List', ''),
         }
-            'Coppock': round(indicators['coppock'], 2) if indicators['coppock'] else None,
-            'Ultimate': round(indicators['ultimate'], 2) if indicators['ultimate'] else None
-        }
         
     except Exception as e:
         return None
