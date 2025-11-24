@@ -338,9 +338,19 @@ def analyze_stock(ticker, ticker_sources):
         latest_close = df['Close'].iloc[-1]
         latest_psar = psar[-1]
         
-        # Handle NaN in PSAR
-        if pd.isna(latest_psar) or pd.isna(latest_close) or latest_close == 0:
+        # Only skip if data is completely invalid
+        if pd.isna(latest_close) or latest_close <= 0:
             return None
+        
+        # If PSAR is NaN but we have price data, still try to calculate
+        if pd.isna(latest_psar):
+            # Try to use the last valid PSAR value
+            valid_psar = psar[~pd.isna(psar)]
+            if len(valid_psar) > 0:
+                latest_psar = valid_psar.iloc[-1]
+            else:
+                # No valid PSAR at all, skip this stock
+                return None
         
         distance_pct = ((latest_close - latest_psar) / latest_close) * 100
         change_pct = ((latest_close - df['Close'].iloc[-2]) / df['Close'].iloc[-2]) * 100
@@ -718,7 +728,22 @@ def format_alert_email(changes, all_buys, all_early):
                 <th>Ticker</th><th>Company</th><th>Source</th><th>Price</th><th>Distance %</th><th>Day Chg %</th><th>MACD</th><th>BB</th><th>Coppock</th><th>Ultimate</th><th>RSI</th>
             </tr>
         """
-        for pos in sorted(changes['new_entries'], key=lambda x: x.get('Distance %', 999)):
+        # Calculate signal count for each new entry
+        for pos in changes['new_entries']:
+            pos['signal_count'] = sum([
+                pos.get('MACD_Buy', False),
+                pos.get('BB_Buy', False),
+                pos.get('WillR_Buy', False),
+                pos.get('Coppock_Buy', False),
+                pos.get('Ultimate_Buy', False)
+            ])
+        
+        # Sort by highest distance first (strongest signals), then by signal count
+        sorted_entries = sorted(changes['new_entries'], 
+                               key=lambda x: (x.get('Distance %', 0), x.get('signal_count', 0)), 
+                               reverse=True)
+        
+        for pos in sorted_entries:
             html += f"""
             <tr>
                 <td><strong>{pos['Ticker']}</strong></td>
@@ -953,7 +978,8 @@ def main():
     dividend_psar_stocks = []
     for stock in all_buys:
         div_yield = stock.get('Dividend Yield %', 0)
-        if div_yield and div_yield > 1.0:
+        # Check if dividend exists and is a valid number > 1%
+        if div_yield and isinstance(div_yield, (int, float)) and div_yield > 1.0:
             dividend_psar_stocks.append(stock)
     
     if dividend_psar_stocks:
@@ -976,6 +1002,10 @@ def main():
             print(f"{i:<5} {ticker:<8} {company:<35} {div_yield:>6.2f}% ${price:>8.2f} {distance:>10.2f}%  {sector:<25}")
     else:
         print("\nNo dividend stocks (>1% yield) with PSAR Buy signals found.")
+        print("This might mean:")
+        print("  - No PSAR buy signals have dividend yields > 1%")
+        print("  - Dividend data failed to fetch from yfinance")
+        print(f"  - Total PSAR buys checked: {len(all_buys)}")
     
     print("\n" + "=" * 100)
     print()
