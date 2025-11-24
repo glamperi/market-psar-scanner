@@ -351,9 +351,13 @@ def analyze_stock(ticker, ticker_sources):
             company = info.get('longName', ticker)
             sector = info.get('sector', 'N/A')
             dividend_yield = info.get('dividendYield', 0)
-            # Convert to percentage if it exists
-            if dividend_yield:
-                dividend_yield = round(dividend_yield * 100, 2)
+            # yfinance returns dividend yield in inconsistent formats
+            # Normalize to percentage (e.g., 7.29 for 7.29%)
+            if dividend_yield and dividend_yield > 0:
+                # If > 1, it's likely in basis points or needs normalization
+                if dividend_yield > 1:
+                    dividend_yield = dividend_yield / 100
+                dividend_yield = round(dividend_yield, 2)
             else:
                 dividend_yield = 0
         except:
