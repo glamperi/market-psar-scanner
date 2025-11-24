@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+venv/
+env/
+
+# Generated files locally
+*.log
+*.backup
+*.corrupted
+
+# Sensitive
+config_local.py
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
+
+# IBD CSV files are optionally included
+# Uncomment to ignore them:
+# ibd_*.csv
