@@ -26,8 +26,8 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install yfinance pandas numpy lxml html5lib beautifulsoup4 openpyxl xlrd
-    
+        pip install -r requirements.txt
+ 
     - name: Restore scan history
       uses: actions/cache@v4
       with:
