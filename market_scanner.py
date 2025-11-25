@@ -1,3 +1,8 @@
+import warnings
+# Suppress the FutureWarning from ta library
+warnings.filterwarnings('ignore', category=FutureWarning)
+warnings.filterwarnings('ignore', category=DeprecationWarning)
+
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -18,16 +23,25 @@ class MarketScanner:
         """Load priority watchlist from custom_watchlist.txt"""
         watchlist_file = 'custom_watchlist.txt'
         watchlist = []
+        seen = set()
         
         if os.path.exists(watchlist_file):
             try:
-                with open(watchlist_file, 'r') as f:
+                # Use utf-8-sig to handle BOM (Byte Order Mark) that some editors add
+                with open(watchlist_file, 'r', encoding='utf-8-sig') as f:
                     for line in f:
-                        line = line.strip()
-                        if line and not line.startswith('#'):
-                            watchlist.append(line.upper())
+                        # Strip whitespace, BOM characters, and convert to uppercase
+                        ticker = line.strip().upper()
+                        # Remove any hidden characters
+                        ticker = ''.join(c for c in ticker if c.isalnum() or c in '-.')
+                        # Skip empty lines, comments, and duplicates
+                        if ticker and not ticker.startswith('#') and ticker not in seen:
+                            watchlist.append(ticker)
+                            seen.add(ticker)
+                        elif ticker and ticker in seen:
+                            print(f"  ⚠️ Skipping duplicate: {ticker}")
                 
-                print(f"\n✓ Loaded {len(watchlist)} tickers from custom watchlist")
+                print(f"\n✓ Loaded {len(watchlist)} unique tickers from custom watchlist")
                 for ticker in watchlist:
                     print(f"  - {ticker}")
             except Exception as e:
@@ -125,22 +139,36 @@ class MarketScanner:
         return []
     
     def get_dividend_yield(self, ticker_obj):
-        """Get dividend yield for a ticker - FIXED VERSION"""
+        """Get dividend yield for a ticker - FIXED VERSION with validation"""
         try:
             info = ticker_obj.info
             
-            # Method 1: Direct dividendYield (already in percentage form)
+            # Method 1: Direct dividendYield (yfinance returns as decimal, e.g., 0.02 = 2%)
             div_yield = info.get('dividendYield', None)
             if div_yield and div_yield > 0:
-                # dividendYield is a decimal (0.02 = 2%)
-                return round(div_yield * 100, 2)
+                # Check if it's already a percentage (>1) or decimal (<1)
+                if div_yield > 1:
+                    # Already a percentage, don't multiply
+                    result = round(div_yield, 2)
+                else:
+                    # Decimal form, convert to percentage
+                    result = round(div_yield * 100, 2)
+                
+                # Sanity check - cap at 25% (anything higher is likely an error)
+                if result > 25:
+                    return 0.0
+                return result
             
             # Method 2: Calculate from dividendRate and price
             div_rate = info.get('dividendRate', None)
             price = info.get('currentPrice', info.get('regularMarketPrice', None))
             
             if div_rate and price and div_rate > 0 and price > 0:
-                return round((div_rate / price) * 100, 2)
+                result = round((div_rate / price) * 100, 2)
+                # Sanity check
+                if result > 25:
+                    return 0.0
+                return result
             
             return 0.0
         except Exception as e:
@@ -206,7 +234,43 @@ class MarketScanner:
             psar_value = psar.iloc[-1]
             is_bullish = pd.notna(psar_up.iloc[-1])
             
-            psar_distance = ((current_price - psar_value) / current_price * 100) if is_bullish else ((psar_value - current_price) / current_price * 100)
+            # Calculate PSAR distance safely - NEGATIVE for sells, POSITIVE for buys
+            if pd.notna(psar_value) and psar_value > 0 and pd.notna(current_price) and current_price > 0:
+                raw_distance = abs((current_price - psar_value) / current_price) * 100
+                # Make it negative if PSAR is above price (sell signal)
+                if not is_bullish:
+                    psar_distance = -raw_distance
+                else:
+                    psar_distance = raw_distance
+            else:
+                psar_distance = 0.0
+            
+            # Validate - skip if NaN
+            if pd.isna(psar_distance) or pd.isna(current_price) or pd.isna(psar_value):
+                return None
+            
+            # Calculate days since PSAR signal (how many days ago did it flip to buy?)
+            days_since_signal = 0
+            if is_bullish:
+                # Count backwards to find when PSAR flipped
+                for i in range(len(psar_up) - 1, -1, -1):
+                    if pd.notna(psar_up.iloc[i]):
+                        days_since_signal += 1
+                    else:
+                        break
+            
+            # 52-week high and % off high
+            high_52w = hist['High'].tail(252).max() if len(hist) >= 252 else hist['High'].max()
+            pct_off_high = ((high_52w - current_price) / high_52w) * 100 if high_52w > 0 else 0
+            
+            # 50-day moving average
+            ma_50 = hist['Close'].tail(50).mean() if len(hist) >= 50 else hist['Close'].mean()
+            above_ma50 = current_price > ma_50
+            
+            # Volume confirmation (today's volume vs 20-day average)
+            vol_20_avg = hist['Volume'].tail(20).mean() if len(hist) >= 20 else hist['Volume'].mean()
+            current_volume = hist['Volume'].iloc[-1] if 'Volume' in hist.columns else 0
+            volume_ratio = (current_volume / vol_20_avg) if vol_20_avg > 0 else 1.0
             
             # MACD
             macd = MACD(close=hist['Close'])
@@ -247,27 +311,42 @@ class MarketScanner:
             if has_coppock: signal_weight += 10
             if has_ultimate: signal_weight += 30
             
+            # Entry Quality Score (A/B/C) - Loosened criteria
+            entry_grade = 'C'
+            if is_bullish:
+                # Grade A: Fresh signal with either good weight OR oversold RSI
+                if days_since_signal <= 7 and (signal_weight >= 50 or rsi_value < 40):
+                    entry_grade = 'A'
+                # Grade B: Reasonably fresh with some weight
+                elif days_since_signal <= 20 and signal_weight >= 20:
+                    entry_grade = 'B'
+            
             # Day change
             day_change = ((current_price - hist['Close'].iloc[-2]) / hist['Close'].iloc[-2] * 100) if len(hist) > 1 else 0
             
             return {
-                'price': current_price,
-                'psar_value': psar_value,
-                'psar_bullish': is_bullish,
-                'psar_distance': psar_distance,
-                'has_macd': has_macd,
-                'has_bb': has_bb,
-                'has_willr': has_willr,
-                'has_coppock': has_coppock,
-                'has_ultimate': has_ultimate,
-                'rsi': rsi_value,
-                'signal_weight': signal_weight,
-                'day_change': day_change
+                'price': float(current_price),
+                'psar_value': float(psar_value),
+                'psar_bullish': bool(is_bullish),
+                'psar_distance': float(psar_distance),
+                'days_since_signal': int(days_since_signal),
+                'pct_off_high': float(pct_off_high),
+                'above_ma50': bool(above_ma50),
+                'volume_ratio': float(volume_ratio),
+                'entry_grade': entry_grade,
+                'has_macd': bool(has_macd),
+                'has_bb': bool(has_bb),
+                'has_willr': bool(has_willr),
+                'has_coppock': bool(has_coppock),
+                'has_ultimate': bool(has_ultimate),
+                'rsi': float(rsi_value) if pd.notna(rsi_value) else 50.0,
+                'signal_weight': int(signal_weight),
+                'day_change': float(day_change)
             }
         except Exception as e:
             return None
     
-    def scan_ticker_full(self, ticker_symbol, source="Unknown"):
+    def scan_ticker_full(self, ticker_symbol, source="Unknown", skip_market_cap_filter=False):
         """Scan a single ticker with full data"""
         try:
             ticker_obj = yf.Ticker(ticker_symbol)
@@ -276,11 +355,37 @@ class MarketScanner:
             if hist.empty or len(hist) < 50:
                 return None
             
-            # Get company name
+            # Get company info
             try:
-                company_name = ticker_obj.info.get('longName', ticker_symbol)
+                info = ticker_obj.info
+                company_name = info.get('longName', ticker_symbol)
+                market_cap = info.get('marketCap', 0) or 0
+                sector = info.get('sector', '') or ''
+                quote_type = info.get('quoteType', '') or ''
             except:
                 company_name = ticker_symbol
+                market_cap = 0
+                sector = ''
+                quote_type = ''
+            
+            # Market cap filter: $10B minimum unless IBD or watchlist
+            if not skip_market_cap_filter:
+                if market_cap < 10_000_000_000:  # $10 billion
+                    return None
+            
+            # Detect REIT or Limited Partnership
+            is_reit = (
+                'REIT' in sector.upper() or 
+                'REIT' in (company_name or '').upper() or
+                'REAL ESTATE' in sector.upper()
+            )
+            is_lp = (
+                quote_type == 'MUTUALFUND' or
+                ' LP' in (company_name or '').upper() or
+                ' L.P.' in (company_name or '').upper() or
+                'LIMITED PARTNER' in (company_name or '').upper() or
+                ticker_symbol.endswith('LP')
+            )
             
             # Calculate indicators
             indicators = self.calculate_indicators(hist)
@@ -295,9 +400,12 @@ class MarketScanner:
             
             result = {
                 'ticker': ticker_symbol,
-                'company': company_name,
+                'company': company_name if company_name else ticker_symbol,
                 'source': source,
                 'dividend_yield': dividend_yield,
+                'market_cap': market_cap,
+                'is_reit': is_reit,
+                'is_lp': is_lp,
                 'composite': ibd_data.get('composite', 'N/A'),
                 'eps': ibd_data.get('eps', 'N/A'),
                 'rs': ibd_data.get('rs', 'N/A'),
@@ -331,7 +439,7 @@ class MarketScanner:
             print(f"\n📍 Scanning priority ticker: {ticker}")
             
             try:
-                result = self.scan_ticker_full(ticker, source="Watchlist")
+                result = self.scan_ticker_full(ticker, source="Watchlist", skip_market_cap_filter=True)
                 if result:
                     result['is_watchlist'] = True
                     watchlist_results.append(result)
@@ -372,7 +480,9 @@ class MarketScanner:
         
         for ticker, source in all_tickers.items():
             try:
-                result = self.scan_ticker_full(ticker, source=source)
+                # Skip market cap filter for IBD stocks
+                skip_cap = 'IBD' in source
+                result = self.scan_ticker_full(ticker, source=source, skip_market_cap_filter=skip_cap)
                 if result:
                     result['is_watchlist'] = False
                     broad_market_results.append(result)
