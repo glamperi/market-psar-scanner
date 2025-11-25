@@ -7,8 +7,6 @@ from ta.trend import MACD, PSARIndicator
 from ta.volatility import BollingerBands
 from ta.momentum import WilliamsRIndicator, UltimateOscillator, RSIIndicator
 from ta.trend import CCIIndicator
-import requests
-from io import StringIO
 
 class MarketScanner:
     def __init__(self):
@@ -36,169 +34,117 @@ class MarketScanner:
                 print(f"✗ Error loading custom watchlist: {e}")
         else:
             print(f"\nℹ️  No custom watchlist found at {watchlist_file}")
-            print(f"   Create one to track your priority positions!")
         
         return watchlist
     
-    def load_sp500_tickers(self):
-        """Get S&P 500 tickers using alternative method"""
-        try:
-            print("\nFetching S&P 500 tickers...")
-            # Use FMP Cloud API (free tier)
-            url = "https://financialmodelingprep.com/api/v3/sp500_constituent?apikey=demo"
-            response = requests.get(url, timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                tickers = [item['symbol'] for item in data]
-                print(f"✓ Loaded {len(tickers)} S&P 500 tickers")
-                return tickers
-        except:
-            pass
-        
-        # Fallback: hardcoded major S&P 500 stocks
-        print("⚠️  Using hardcoded S&P 500 list...")
-        sp500_major = [
-            'AAPL', 'MSFT', 'GOOGL', 'GOOG', 'AMZN', 'NVDA', 'META', 'TSLA', 'BRK.B', 'UNH',
-            'JNJ', 'XOM', 'V', 'JPM', 'WMT', 'PG', 'MA', 'CVX', 'HD', 'LLY',
-            'ABBV', 'MRK', 'KO', 'AVGO', 'PEP', 'COST', 'ADBE', 'TMO', 'MCD', 'CSCO',
-            'ACN', 'ABT', 'NKE', 'DHR', 'CRM', 'VZ', 'TXN', 'NEE', 'WFC', 'PM',
-            'INTC', 'NFLX', 'CMCSA', 'BMY', 'UPS', 'LOW', 'HON', 'QCOM', 'ORCL', 'RTX',
-            'AMD', 'SBUX', 'INTU', 'UNP', 'BA', 'GE', 'CAT', 'DE', 'PFE', 'AMAT',
-            'SPGI', 'LMT', 'BLK', 'MDT', 'ADP', 'ELV', 'CI', 'GILD', 'MMC', 'SYK',
-            'AMT', 'TGT', 'MDLZ', 'PLD', 'ISRG', 'ZTS', 'CB', 'DUK', 'SO', 'C',
-            'SCHW', 'LRCX', 'REGN', 'MO', 'BDX', 'ADI', 'CVS', 'CL', 'BSX', 'ETN',
-            'NOW', 'PNC', 'USB', 'TJX', 'SLB', 'EOG', 'HCA', 'GD', 'MMM', 'NOC',
-            # Add more as needed
+    def load_ibd_stats(self):
+        """Load IBD stats from all IBD CSV files"""
+        ibd_files = [
+            'ibd_50.csv',
+            'ibd_bigcap20.csv', 
+            'ibd_sector.csv',
+            'ibd_ipo.csv',
+            'ibd_spotlight.csv'
         ]
-        print(f"✓ Loaded {len(sp500_major)} major S&P 500 tickers")
-        return sp500_major
+        
+        all_ibd_tickers = []
+        
+        for filename in ibd_files:
+            if os.path.exists(filename):
+                try:
+                    df = pd.read_csv(filename)
+                    
+                    # Check if this file has stats or just symbols
+                    if 'Composite' in df.columns:
+                        # Full stats file
+                        for _, row in df.iterrows():
+                            symbol = str(row['Symbol']).strip().upper()
+                            all_ibd_tickers.append(symbol)
+                            
+                            self.ibd_stats[symbol] = {
+                                'composite': row.get('Composite', 'N/A'),
+                                'eps': row.get('EPS', 'N/A'),
+                                'rs': row.get('RS', 'N/A'),
+                                'smr': row.get('SMR', 'N/A'),
+                                'source': filename.replace('.csv', '').replace('_', ' ').upper()
+                            }
+                    else:
+                        # Just symbols (like ibd_spotlight.csv)
+                        for symbol in df['Symbol'].tolist():
+                            symbol = str(symbol).strip().upper()
+                            all_ibd_tickers.append(symbol)
+                            if symbol not in self.ibd_stats:
+                                self.ibd_stats[symbol] = {
+                                    'composite': 'N/A',
+                                    'eps': 'N/A',
+                                    'rs': 'N/A',
+                                    'smr': 'N/A',
+                                    'source': filename.replace('.csv', '').replace('_', ' ').upper()
+                                }
+                    
+                    print(f"✓ Loaded {len(df)} tickers from {filename}")
+                except Exception as e:
+                    print(f"✗ Error loading {filename}: {e}")
+        
+        return list(set(all_ibd_tickers))
+    
+    def load_sp500_tickers(self):
+        """Load S&P 500 from CSV"""
+        if os.path.exists('sp500_tickers.csv'):
+            try:
+                df = pd.read_csv('sp500_tickers.csv')
+                tickers = df['Symbol'].tolist()
+                print(f"✓ Loaded {len(tickers)} S&P 500 tickers from CSV")
+                return tickers
+            except Exception as e:
+                print(f"✗ Error loading sp500_tickers.csv: {e}")
+        return []
     
     def load_nasdaq100_tickers(self):
-        """Get NASDAQ 100 tickers"""
-        try:
-            print("\nFetching NASDAQ 100 tickers...")
-            # Use alternative source
-            url = "https://api.nasdaq.com/api/quote/list-type/nasdaq100"
-            headers = {'User-Agent': 'Mozilla/5.0'}
-            response = requests.get(url, headers=headers, timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                tickers = [item['symbol'] for item in data['data']['data']['rows']]
-                print(f"✓ Loaded {len(tickers)} NASDAQ 100 tickers")
+        """Load NASDAQ 100 from CSV"""
+        if os.path.exists('nasdaq100_tickers.csv'):
+            try:
+                df = pd.read_csv('nasdaq100_tickers.csv')
+                tickers = df['Symbol'].tolist()
+                print(f"✓ Loaded {len(tickers)} NASDAQ 100 tickers from CSV")
                 return tickers
-        except:
-            pass
-        
-        # Fallback: hardcoded major NASDAQ 100 stocks
-        print("⚠️  Using hardcoded NASDAQ 100 list...")
-        nasdaq100_major = [
-            'AAPL', 'MSFT', 'GOOGL', 'GOOG', 'AMZN', 'NVDA', 'META', 'TSLA', 'AVGO', 'COST',
-            'ADBE', 'NFLX', 'CSCO', 'CMCSA', 'PEP', 'INTC', 'QCOM', 'AMD', 'INTU', 'TXN',
-            'HON', 'SBUX', 'AMAT', 'ISRG', 'ADP', 'GILD', 'ADI', 'REGN', 'BKNG', 'VRTX',
-            'PANW', 'MU', 'LRCX', 'MDLZ', 'PYPL', 'ASML', 'KLAC', 'SNPS', 'CDNS', 'MAR',
-            'MELI', 'ABNB', 'FTNT', 'ORLY', 'AZN', 'NXPI', 'WDAY', 'ADSK', 'CHTR', 'MNST',
-            'CRWD', 'MRVL', 'DXCM', 'PCAR', 'TEAM', 'DASH', 'PAYX', 'CPRT', 'KDP', 'AEP',
-            'ROST', 'FAST', 'ODFL', 'EA', 'BKR', 'VRSK', 'DDOG', 'CTSH', 'GEHC', 'LULU',
-            'XEL', 'EXC', 'ZS', 'IDXX', 'KHC', 'MCHP', 'ANSS', 'CSGP', 'ON', 'TTWO',
-            'FANG', 'CDW', 'WBD', 'BIIB', 'ILMN', 'GFS', 'MRNA', 'DLTR', 'WBA', 'ALGN',
-        ]
-        print(f"✓ Loaded {len(nasdaq100_major)} major NASDAQ 100 tickers")
-        return nasdaq100_major
+            except Exception as e:
+                print(f"✗ Error loading nasdaq100_tickers.csv: {e}")
+        return []
     
     def load_russell2000_tickers(self):
-        """Get Russell 2000 tickers from iShares"""
-        try:
-            print("\nFetching Russell 2000 tickers from iShares...")
-            url = 'https://www.ishares.com/us/products/239710/ishares-russell-2000-etf/1467271812596.ajax?fileType=csv&fileName=IWM_holdings&dataType=fund'
-            
-            response = requests.get(url, timeout=30)
-            if response.status_code == 200:
-                # Skip first 10 rows (header info)
-                df = pd.read_csv(StringIO(response.text), skiprows=10)
-                
-                # Get ticker column (usually named 'Ticker')
-                if 'Ticker' in df.columns:
-                    tickers = df['Ticker'].dropna().tolist()
-                else:
-                    # Try alternative column names
-                    possible_cols = ['Symbol', 'SYMBOL', 'ticker', 'symbol']
-                    ticker_col = next((col for col in possible_cols if col in df.columns), None)
-                    if ticker_col:
-                        tickers = df[ticker_col].dropna().tolist()
-                    else:
-                        raise Exception("Could not find ticker column")
-                
-                # Clean tickers
-                tickers = [str(t).strip() for t in tickers if isinstance(t, str) and t.strip() and t.strip() != '-']
-                print(f"✓ Loaded {len(tickers)} Russell 2000 tickers")
-                return tickers
-        except Exception as e:
-            print(f"✗ Failed to load Russell 2000: {e}")
-        
-        # If we have a cached file, use it
+        """Load Russell 2000 from CSV"""
         if os.path.exists('russell2000_tickers.csv'):
             try:
                 df = pd.read_csv('russell2000_tickers.csv')
                 tickers = df['Symbol'].tolist()
-                print(f"✓ Loaded {len(tickers)} Russell 2000 tickers from cache")
+                print(f"✓ Loaded {len(tickers)} Russell 2000 tickers from CSV")
                 return tickers
-            except:
-                pass
-        
+            except Exception as e:
+                print(f"✗ Error loading russell2000_tickers.csv: {e}")
         return []
     
-    def load_ibd_tickers(self):
-        """Load IBD tickers with stats"""
-        ibd_tickers = []
-        
-        if os.path.exists('ibd_stocks_with_stats.csv'):
-            try:
-                df = pd.read_csv('ibd_stocks_with_stats.csv')
-                ibd_tickers = df['Symbol'].tolist()
-                
-                for _, row in df.iterrows():
-                    self.ibd_stats[row['Symbol']] = {
-                        'comp_rating': row.get('Comp Rating', 'N/A'),
-                        'rs_rating': row.get('RS Rating', 'N/A'),
-                        'acc_dis': row.get('Acc/Dis', 'N/A'),
-                        'source': row.get('Source', 'IBD')
-                    }
-                
-                print(f"✓ Loaded {len(ibd_tickers)} stocks with IBD stats")
-            except Exception as e:
-                print(f"⚠️  Error loading IBD stats: {e}")
-        
-        return ibd_tickers
-    
     def get_dividend_yield(self, ticker_obj):
-        """Get dividend yield for a ticker"""
+        """Get dividend yield for a ticker - FIXED VERSION"""
         try:
             info = ticker_obj.info
+            
+            # Method 1: Direct dividendYield (already in percentage form)
             div_yield = info.get('dividendYield', None)
             if div_yield and div_yield > 0:
+                # dividendYield is a decimal (0.02 = 2%)
                 return round(div_yield * 100, 2)
             
-            div_rate = info.get('dividendRate', 0)
-            price = info.get('currentPrice', info.get('regularMarketPrice', 0))
-            if div_rate and price and div_rate > 0:
+            # Method 2: Calculate from dividendRate and price
+            div_rate = info.get('dividendRate', None)
+            price = info.get('currentPrice', info.get('regularMarketPrice', None))
+            
+            if div_rate and price and div_rate > 0 and price > 0:
                 return round((div_rate / price) * 100, 2)
             
-            return 0
-        except:
-            return 0
-    
-    def validate_ticker(self, ticker_symbol):
-        """Validate ticker exists and has data"""
-        try:
-            ticker = yf.Ticker(ticker_symbol)
-            hist = ticker.history(period="5d")
-            
-            if hist.empty:
-                return None, "No data available"
-            
-            return ticker_symbol, None
+            return 0.0
         except Exception as e:
-            return None, str(e)
+            return 0.0
     
     def load_all_tickers_with_sources(self):
         """Load all tickers and track their sources"""
@@ -228,7 +174,7 @@ class MarketScanner:
                 ticker_sources[ticker] = 'Russell 2000'
         
         # Load IBD
-        ibd_tickers = self.load_ibd_tickers()
+        ibd_tickers = self.load_ibd_stats()
         for ticker in ibd_tickers:
             if ticker in ticker_sources:
                 ticker_sources[ticker] += ', IBD'
@@ -341,7 +287,7 @@ class MarketScanner:
             if not indicators:
                 return None
             
-            # Get dividend yield
+            # Get dividend yield - FIXED
             dividend_yield = self.get_dividend_yield(ticker_obj)
             
             # Get IBD stats if available
@@ -352,9 +298,10 @@ class MarketScanner:
                 'company': company_name,
                 'source': source,
                 'dividend_yield': dividend_yield,
-                'comp_rating': ibd_data.get('comp_rating', 'N/A'),
-                'rs_rating': ibd_data.get('rs_rating', 'N/A'),
-                'acc_dis': ibd_data.get('acc_dis', 'N/A'),
+                'composite': ibd_data.get('composite', 'N/A'),
+                'eps': ibd_data.get('eps', 'N/A'),
+                'rs': ibd_data.get('rs', 'N/A'),
+                'smr': ibd_data.get('smr', 'N/A'),
                 **indicators
             }
             
@@ -383,15 +330,8 @@ class MarketScanner:
         for ticker in watchlist:
             print(f"\n📍 Scanning priority ticker: {ticker}")
             
-            validated_ticker, error = self.validate_ticker(ticker)
-            
-            if not validated_ticker:
-                print(f"  ✗ INVALID: {error}")
-                self.ticker_issues.append({'ticker': ticker, 'issue': error})
-                continue
-            
             try:
-                result = self.scan_ticker_full(validated_ticker, source="Watchlist")
+                result = self.scan_ticker_full(ticker, source="Watchlist")
                 if result:
                     result['is_watchlist'] = True
                     watchlist_results.append(result)
@@ -399,18 +339,16 @@ class MarketScanner:
                     if result['psar_bullish']:
                         print(f"  ✓ PSAR BUY")
                         print(f"    Distance: {result['psar_distance']:.2f}%")
-                        print(f"    Signal Weight: {result['signal_weight']}")
+                        print(f"    Weight: {result['signal_weight']}")
                         print(f"    Price: ${result['price']:.2f}")
                         if result['dividend_yield'] > 0:
                             print(f"    Dividend: {result['dividend_yield']:.2f}%")
                     else:
-                        print(f"  ○ PSAR SELL - Not in buy mode")
+                        print(f"  ○ PSAR SELL")
                 else:
                     print(f"  ✗ No data available")
-                    self.ticker_issues.append({'ticker': ticker, 'issue': 'No historical data'})
             except Exception as e:
                 print(f"  ✗ ERROR: {str(e)}")
-                self.ticker_issues.append({'ticker': ticker, 'issue': str(e)})
         
         print(f"\n✓ Watchlist scan complete: {len(watchlist_results)}/{len(watchlist)} successful")
         
@@ -421,7 +359,7 @@ class MarketScanner:
         
         all_tickers = self.load_all_tickers_with_sources()
         
-        # Remove watchlist tickers to avoid duplicates
+        # Remove watchlist tickers
         for ticker in watchlist:
             if ticker in all_tickers:
                 del all_tickers[ticker]
@@ -461,8 +399,6 @@ class MarketScanner:
     def run(self):
         """Main scanner execution"""
         results = self.scan_with_priority()
-        
-        # Save results
         self.results = results
         
         print("\n" + "="*60)
@@ -475,7 +411,6 @@ if __name__ == "__main__":
     scanner = MarketScanner()
     results = scanner.run()
     
-    # Generate and send email report
     print("\nGenerating email report...")
     from email_report import EmailReport
     report = EmailReport(results)
