@@ -7,6 +7,8 @@ from ta.trend import MACD, PSARIndicator
 from ta.volatility import BollingerBands
 from ta.momentum import WilliamsRIndicator, UltimateOscillator, RSIIndicator
 from ta.trend import CCIIndicator
+import requests
+from io import StringIO
 
 class MarketScanner:
     def __init__(self):
@@ -38,76 +40,111 @@ class MarketScanner:
         
         return watchlist
     
-    def load_sp500_tickers_live(self):
-        """Get current S&P 500 tickers from Wikipedia"""
+    def load_sp500_tickers(self):
+        """Get S&P 500 tickers using alternative method"""
         try:
-            print("\nFetching live S&P 500 ticker list from Wikipedia...")
-            url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
-            tables = pd.read_html(url)
-            sp500_table = tables[0]
-            tickers = sp500_table['Symbol'].tolist()
-            tickers = [t.replace('.', '-') for t in tickers]
-            print(f"✓ Loaded {len(tickers)} current S&P 500 tickers (live)")
-            return tickers
-        except Exception as e:
-            print(f"⚠️  Failed to load live S&P 500: {e}")
-            print("   Falling back to existing method...")
-            return self.load_sp500_tickers_fallback()
-    
-    def load_nasdaq100_tickers_live(self):
-        """Get current NASDAQ 100 tickers from Wikipedia"""
-        try:
-            print("\nFetching live NASDAQ 100 ticker list from Wikipedia...")
-            url = 'https://en.wikipedia.org/wiki/Nasdaq-100'
-            tables = pd.read_html(url)
-            nasdaq_table = tables[4]
-            tickers = nasdaq_table['Ticker'].tolist()
-            print(f"✓ Loaded {len(tickers)} current NASDAQ 100 tickers (live)")
-            return tickers
-        except Exception as e:
-            print(f"⚠️  Failed to load live NASDAQ 100: {e}")
-            print("   Falling back to existing method...")
-            return self.load_nasdaq100_tickers_fallback()
-    
-    def load_russell2000_tickers_live(self):
-        """Get current Russell 2000 tickers from iShares IWM"""
-        try:
-            print("\nFetching live Russell 2000 ticker list from iShares IWM...")
-            url = 'https://www.ishares.com/us/products/239710/ishares-russell-2000-etf/1467271812596.ajax?fileType=csv&fileName=IWM_holdings&dataType=fund'
-            df = pd.read_csv(url, skiprows=10)
-            tickers = df['Ticker'].dropna().tolist()
-            tickers = [t.strip() for t in tickers if isinstance(t, str) and t.strip() and t.strip() != '-']
-            print(f"✓ Loaded {len(tickers)} current Russell 2000 tickers (live)")
-            return tickers
-        except Exception as e:
-            print(f"⚠️  Failed to load live Russell 2000: {e}")
-            print("   Falling back to existing method...")
-            return self.load_russell2000_tickers_fallback()
-    
-    def load_sp500_tickers_fallback(self):
-        """Fallback: Load S&P 500 from yfinance"""
-        try:
-            sp500 = pd.read_html('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies')[0]
-            return sp500['Symbol'].str.replace('.', '-').tolist()
-        except:
-            return []
-    
-    def load_nasdaq100_tickers_fallback(self):
-        """Fallback: Load NASDAQ 100 from yfinance"""
-        try:
-            nasdaq = pd.read_html('https://en.wikipedia.org/wiki/Nasdaq-100')[4]
-            return nasdaq['Ticker'].tolist()
-        except:
-            return []
-    
-    def load_russell2000_tickers_fallback(self):
-        """Fallback: Load Russell 2000 from CSV if exists"""
-        try:
-            if os.path.exists('russell2000_tickers.csv'):
-                df = pd.read_csv('russell2000_tickers.csv')
-                return df['Symbol'].tolist()
+            print("\nFetching S&P 500 tickers...")
+            # Use FMP Cloud API (free tier)
+            url = "https://financialmodelingprep.com/api/v3/sp500_constituent?apikey=demo"
+            response = requests.get(url, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                tickers = [item['symbol'] for item in data]
+                print(f"✓ Loaded {len(tickers)} S&P 500 tickers")
+                return tickers
         except:
             pass
+        
+        # Fallback: hardcoded major S&P 500 stocks
+        print("⚠️  Using hardcoded S&P 500 list...")
+        sp500_major = [
+            'AAPL', 'MSFT', 'GOOGL', 'GOOG', 'AMZN', 'NVDA', 'META', 'TSLA', 'BRK.B', 'UNH',
+            'JNJ', 'XOM', 'V', 'JPM', 'WMT', 'PG', 'MA', 'CVX', 'HD', 'LLY',
+            'ABBV', 'MRK', 'KO', 'AVGO', 'PEP', 'COST', 'ADBE', 'TMO', 'MCD', 'CSCO',
+            'ACN', 'ABT', 'NKE', 'DHR', 'CRM', 'VZ', 'TXN', 'NEE', 'WFC', 'PM',
+            'INTC', 'NFLX', 'CMCSA', 'BMY', 'UPS', 'LOW', 'HON', 'QCOM', 'ORCL', 'RTX',
+            'AMD', 'SBUX', 'INTU', 'UNP', 'BA', 'GE', 'CAT', 'DE', 'PFE', 'AMAT',
+            'SPGI', 'LMT', 'BLK', 'MDT', 'ADP', 'ELV', 'CI', 'GILD', 'MMC', 'SYK',
+            'AMT', 'TGT', 'MDLZ', 'PLD', 'ISRG', 'ZTS', 'CB', 'DUK', 'SO', 'C',
+            'SCHW', 'LRCX', 'REGN', 'MO', 'BDX', 'ADI', 'CVS', 'CL', 'BSX', 'ETN',
+            'NOW', 'PNC', 'USB', 'TJX', 'SLB', 'EOG', 'HCA', 'GD', 'MMM', 'NOC',
+            # Add more as needed
+        ]
+        print(f"✓ Loaded {len(sp500_major)} major S&P 500 tickers")
+        return sp500_major
+    
+    def load_nasdaq100_tickers(self):
+        """Get NASDAQ 100 tickers"""
+        try:
+            print("\nFetching NASDAQ 100 tickers...")
+            # Use alternative source
+            url = "https://api.nasdaq.com/api/quote/list-type/nasdaq100"
+            headers = {'User-Agent': 'Mozilla/5.0'}
+            response = requests.get(url, headers=headers, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                tickers = [item['symbol'] for item in data['data']['data']['rows']]
+                print(f"✓ Loaded {len(tickers)} NASDAQ 100 tickers")
+                return tickers
+        except:
+            pass
+        
+        # Fallback: hardcoded major NASDAQ 100 stocks
+        print("⚠️  Using hardcoded NASDAQ 100 list...")
+        nasdaq100_major = [
+            'AAPL', 'MSFT', 'GOOGL', 'GOOG', 'AMZN', 'NVDA', 'META', 'TSLA', 'AVGO', 'COST',
+            'ADBE', 'NFLX', 'CSCO', 'CMCSA', 'PEP', 'INTC', 'QCOM', 'AMD', 'INTU', 'TXN',
+            'HON', 'SBUX', 'AMAT', 'ISRG', 'ADP', 'GILD', 'ADI', 'REGN', 'BKNG', 'VRTX',
+            'PANW', 'MU', 'LRCX', 'MDLZ', 'PYPL', 'ASML', 'KLAC', 'SNPS', 'CDNS', 'MAR',
+            'MELI', 'ABNB', 'FTNT', 'ORLY', 'AZN', 'NXPI', 'WDAY', 'ADSK', 'CHTR', 'MNST',
+            'CRWD', 'MRVL', 'DXCM', 'PCAR', 'TEAM', 'DASH', 'PAYX', 'CPRT', 'KDP', 'AEP',
+            'ROST', 'FAST', 'ODFL', 'EA', 'BKR', 'VRSK', 'DDOG', 'CTSH', 'GEHC', 'LULU',
+            'XEL', 'EXC', 'ZS', 'IDXX', 'KHC', 'MCHP', 'ANSS', 'CSGP', 'ON', 'TTWO',
+            'FANG', 'CDW', 'WBD', 'BIIB', 'ILMN', 'GFS', 'MRNA', 'DLTR', 'WBA', 'ALGN',
+        ]
+        print(f"✓ Loaded {len(nasdaq100_major)} major NASDAQ 100 tickers")
+        return nasdaq100_major
+    
+    def load_russell2000_tickers(self):
+        """Get Russell 2000 tickers from iShares"""
+        try:
+            print("\nFetching Russell 2000 tickers from iShares...")
+            url = 'https://www.ishares.com/us/products/239710/ishares-russell-2000-etf/1467271812596.ajax?fileType=csv&fileName=IWM_holdings&dataType=fund'
+            
+            response = requests.get(url, timeout=30)
+            if response.status_code == 200:
+                # Skip first 10 rows (header info)
+                df = pd.read_csv(StringIO(response.text), skiprows=10)
+                
+                # Get ticker column (usually named 'Ticker')
+                if 'Ticker' in df.columns:
+                    tickers = df['Ticker'].dropna().tolist()
+                else:
+                    # Try alternative column names
+                    possible_cols = ['Symbol', 'SYMBOL', 'ticker', 'symbol']
+                    ticker_col = next((col for col in possible_cols if col in df.columns), None)
+                    if ticker_col:
+                        tickers = df[ticker_col].dropna().tolist()
+                    else:
+                        raise Exception("Could not find ticker column")
+                
+                # Clean tickers
+                tickers = [str(t).strip() for t in tickers if isinstance(t, str) and t.strip() and t.strip() != '-']
+                print(f"✓ Loaded {len(tickers)} Russell 2000 tickers")
+                return tickers
+        except Exception as e:
+            print(f"✗ Failed to load Russell 2000: {e}")
+        
+        # If we have a cached file, use it
+        if os.path.exists('russell2000_tickers.csv'):
+            try:
+                df = pd.read_csv('russell2000_tickers.csv')
+                tickers = df['Symbol'].tolist()
+                print(f"✓ Loaded {len(tickers)} Russell 2000 tickers from cache")
+                return tickers
+            except:
+                pass
+        
         return []
     
     def load_ibd_tickers(self):
@@ -172,12 +209,12 @@ class MarketScanner:
         print("="*60)
         
         # Load S&P 500
-        sp500 = self.load_sp500_tickers_live()
+        sp500 = self.load_sp500_tickers()
         for ticker in sp500:
             ticker_sources[ticker] = 'S&P 500'
         
         # Load NASDAQ 100
-        nasdaq100 = self.load_nasdaq100_tickers_live()
+        nasdaq100 = self.load_nasdaq100_tickers()
         for ticker in nasdaq100:
             if ticker in ticker_sources:
                 ticker_sources[ticker] += ', NASDAQ 100'
@@ -185,7 +222,7 @@ class MarketScanner:
                 ticker_sources[ticker] = 'NASDAQ 100'
         
         # Load Russell 2000
-        russell2000 = self.load_russell2000_tickers_live()
+        russell2000 = self.load_russell2000_tickers()
         for ticker in russell2000:
             if ticker not in ticker_sources:
                 ticker_sources[ticker] = 'Russell 2000'
@@ -390,7 +427,7 @@ class MarketScanner:
                 del all_tickers[ticker]
         
         print(f"Scanning {len(all_tickers)} stocks from broad market...")
-        print(f"This will take 10-20 minutes...\n")
+        print(f"This will take 20-30 minutes...\n")
         
         broad_market_results = []
         progress_count = 0
