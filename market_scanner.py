@@ -7,10 +7,6 @@ from ta.trend import MACD, PSARIndicator
 from ta.volatility import BollingerBands
 from ta.momentum import WilliamsRIndicator, UltimateOscillator, RSIIndicator
 from ta.trend import CCIIndicator
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-import config
 
 class MarketScanner:
     def __init__(self):
@@ -20,7 +16,7 @@ class MarketScanner:
         
     def load_custom_watchlist(self):
         """Load priority watchlist from custom_watchlist.txt"""
-        watchlist_file = getattr(config, 'CUSTOM_WATCHLIST_PATH', 'custom_watchlist.txt')
+        watchlist_file = 'custom_watchlist.txt'
         watchlist = []
         
         if os.path.exists(watchlist_file):
@@ -123,7 +119,6 @@ class MarketScanner:
                 df = pd.read_csv('ibd_stocks_with_stats.csv')
                 ibd_tickers = df['Symbol'].tolist()
                 
-                # Store IBD stats for later use
                 for _, row in df.iterrows():
                     self.ibd_stats[row['Symbol']] = {
                         'comp_rating': row.get('Comp Rating', 'N/A'),
@@ -176,23 +171,13 @@ class MarketScanner:
         print("LOADING TICKER LISTS")
         print("="*60)
         
-        use_live = getattr(config, 'USE_LIVE_TICKER_LISTS', True)
-        
         # Load S&P 500
-        if use_live:
-            sp500 = self.load_sp500_tickers_live()
-        else:
-            sp500 = self.load_sp500_tickers_fallback()
-        
+        sp500 = self.load_sp500_tickers_live()
         for ticker in sp500:
             ticker_sources[ticker] = 'S&P 500'
         
         # Load NASDAQ 100
-        if use_live:
-            nasdaq100 = self.load_nasdaq100_tickers_live()
-        else:
-            nasdaq100 = self.load_nasdaq100_tickers_fallback()
-        
+        nasdaq100 = self.load_nasdaq100_tickers_live()
         for ticker in nasdaq100:
             if ticker in ticker_sources:
                 ticker_sources[ticker] += ', NASDAQ 100'
@@ -200,11 +185,7 @@ class MarketScanner:
                 ticker_sources[ticker] = 'NASDAQ 100'
         
         # Load Russell 2000
-        if use_live:
-            russell2000 = self.load_russell2000_tickers_live()
-        else:
-            russell2000 = self.load_russell2000_tickers_fallback()
-        
+        russell2000 = self.load_russell2000_tickers_live()
         for ticker in russell2000:
             if ticker not in ticker_sources:
                 ticker_sources[ticker] = 'Russell 2000'
@@ -444,7 +425,7 @@ class MarketScanner:
         """Main scanner execution"""
         results = self.scan_with_priority()
         
-        # Save results for email report
+        # Save results
         self.results = results
         
         print("\n" + "="*60)
@@ -455,4 +436,10 @@ class MarketScanner:
 
 if __name__ == "__main__":
     scanner = MarketScanner()
-    scanner.run()
+    results = scanner.run()
+    
+    # Generate and send email report
+    print("\nGenerating email report...")
+    from email_report import EmailReport
+    report = EmailReport(results)
+    report.send_email()
