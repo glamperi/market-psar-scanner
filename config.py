@@ -176,3 +176,24 @@ def get_all_tickers():
     print(f"\n✓ Loaded {len(ibd_stats)} stocks with IBD stats")
     
     return list(all_tickers), ticker_sources, ibd_stats
+
+# ============================================
+# NEW SETTINGS FOR UPDATED SCANNER
+# ============================================
+
+# Custom watchlist
+CUSTOM_WATCHLIST_PATH = 'custom_watchlist.txt'
+
+# Table limits for email report
+TABLE_LIMIT_PSAR = 50
+TABLE_LIMIT_EARLY = 50
+TABLE_LIMIT_DIVIDEND = 50
+TABLE_LIMIT_EXITS = None  # No limit on exits - show all
+
+# Dividend filters
+MIN_DIVIDEND_YIELD = 1.5  # Minimum 1.5% yield to show in dividend table
+
+# Use live ticker lists (fallback to CSV if fails)
+USE_LIVE_TICKER_LISTS = True
+
+
