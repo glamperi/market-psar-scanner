@@ -293,6 +293,7 @@ python market_scanner.py -friends -t "Edward's Stocks" -e "edward@gmail.com"
 | `-mc 5` | Min market cap in billions (default: 10) | `-mc 1` for $1B+ |
 | `-eps 20` | Filter: EPS growth ≥ 20% | `-eps 25` |
 | `-rev 15` | Filter: Revenue growth ≥ 15% | `-rev 10` |
+| `-adr` | Include international ADRs | `-adr` |
 
 ### Market Cap Filter
 
@@ -309,6 +310,25 @@ python market_scanner.py -mc 5
 # Mega-cap only: $100B+
 python market_scanner.py -mc 100
 ```
+
+### International ADRs
+
+Include ~130 major international companies (American Depositary Receipts):
+
+```bash
+# Add international stocks to the scan
+python market_scanner.py -adr
+
+# Combine with market cap filter
+python market_scanner.py -mc 1 -adr
+
+# Full scan with all options
+python market_scanner.py -mc 5 -adr -eps 10 -rev 10
+```
+
+**ADRs included:** BABA, JD, PDD, NIO (China), TSM (Taiwan), TM, SONY (Japan), INFY, HDB (India), VALE, NU, MELI (Latin America), BP, SHEL, AZN, ASML, NVO (Europe), and ~100 more.
+
+You can also create `adr_tickers.csv` with a `Symbol` column to use your own custom ADR list.
 
 ### Growth Filters
 
@@ -391,7 +411,7 @@ AAPL,85,92,78,B
 
 ## GitHub Actions Setup
 
-### .github/workflows/scanner.yml
+### Basic Workflow (.github/workflows/scanner.yml)
 
 ```yaml
 name: PSAR Market Scanner
@@ -432,6 +452,212 @@ jobs:
       with:
         name: exit-history
         path: exit_history.json
+```
+
+### Advanced Workflow with Manual Flag Selection
+
+This version lets you choose scan options when triggering manually:
+
+```yaml
+name: PSAR Market Scanner (Advanced)
+
+on:
+  schedule:
+    - cron: '30 13 * * 1-5'  # 9:30 AM ET
+    - cron: '30 20 * * 1-5'  # 4:30 PM ET
+  workflow_dispatch:
+    inputs:
+      scan_type:
+        description: 'Scan type'
+        required: true
+        default: 'market'
+        type: choice
+        options:
+          - market
+          - mystocks
+          - friends
+      market_cap:
+        description: 'Min market cap in billions (e.g., 1, 5, 10)'
+        required: false
+        default: '10'
+      include_adr:
+        description: 'Include international ADRs'
+        required: false
+        default: false
+        type: boolean
+      eps_growth:
+        description: 'Min EPS growth % (leave empty to skip)'
+        required: false
+        default: ''
+      rev_growth:
+        description: 'Min revenue growth % (leave empty to skip)'
+        required: false
+        default: ''
+      extra_email:
+        description: 'Additional email recipient'
+        required: false
+        default: ''
+      report_title:
+        description: 'Custom report title (for friends mode)'
+        required: false
+        default: ''
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        pip install yfinance pandas ta
+    
+    - name: Build command
+      id: build_cmd
+      run: |
+        CMD="python market_scanner.py"
+        
+        # Scan type
+        if [ "${{ github.event.inputs.scan_type }}" == "mystocks" ]; then
+          CMD="$CMD -mystocks"
+        elif [ "${{ github.event.inputs.scan_type }}" == "friends" ]; then
+          CMD="$CMD -friends"
+        fi
+        
+        # Market cap (only for market scan)
+        if [ "${{ github.event.inputs.scan_type }}" == "market" ] && [ -n "${{ github.event.inputs.market_cap }}" ]; then
+          CMD="$CMD -mc ${{ github.event.inputs.market_cap }}"
+        fi
+        
+        # ADR flag
+        if [ "${{ github.event.inputs.include_adr }}" == "true" ]; then
+          CMD="$CMD -adr"
+        fi
+        
+        # Growth filters
+        if [ -n "${{ github.event.inputs.eps_growth }}" ]; then
+          CMD="$CMD -eps ${{ github.event.inputs.eps_growth }}"
+        fi
+        if [ -n "${{ github.event.inputs.rev_growth }}" ]; then
+          CMD="$CMD -rev ${{ github.event.inputs.rev_growth }}"
+        fi
+        
+        # Extra email
+        if [ -n "${{ github.event.inputs.extra_email }}" ]; then
+          CMD="$CMD -e '${{ github.event.inputs.extra_email }}'"
+        fi
+        
+        # Report title (friends mode)
+        if [ -n "${{ github.event.inputs.report_title }}" ]; then
+          CMD="$CMD -t '${{ github.event.inputs.report_title }}'"
+        fi
+        
+        echo "command=$CMD" >> $GITHUB_OUTPUT
+        echo "Running: $CMD"
+    
+    - name: Run Scanner
+      env:
+        GMAIL_EMAIL: ${{ secrets.GMAIL_EMAIL }}
+        GMAIL_PASSWORD: ${{ secrets.GMAIL_PASSWORD }}
+        RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+      run: |
+        ${{ steps.build_cmd.outputs.command }}
+    
+    - name: Save exit history
+      uses: actions/upload-artifact@v3
+      with:
+        name: exit-history
+        path: exit_history.json
+        if-no-files-found: ignore
+```
+
+### Using the Advanced Workflow
+
+1. Go to **Actions** tab in your GitHub repo
+2. Click **PSAR Market Scanner (Advanced)**
+3. Click **Run workflow**
+4. Fill in the options:
+   - **Scan type**: market, mystocks, or friends
+   - **Min market cap**: 1, 5, 10, etc.
+   - **Include ADRs**: Check to include international stocks
+   - **EPS growth**: Leave empty or enter minimum % (e.g., 15)
+   - **Revenue growth**: Leave empty or enter minimum %
+5. Click **Run workflow**
+
+### Multiple Scheduled Scans with Different Options
+
+You can create multiple workflow files for different scan configurations:
+
+**File: .github/workflows/scan-market.yml** (Default market scan)
+```yaml
+name: Market Scan (Default)
+on:
+  schedule:
+    - cron: '30 13 * * 1-5'
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    - run: pip install yfinance pandas ta
+    - env:
+        GMAIL_EMAIL: ${{ secrets.GMAIL_EMAIL }}
+        GMAIL_PASSWORD: ${{ secrets.GMAIL_PASSWORD }}
+        RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+      run: python market_scanner.py -mc 10
+```
+
+**File: .github/workflows/scan-smallcap-adr.yml** (Small cap + ADRs)
+```yaml
+name: Small Cap + ADR Scan
+on:
+  schedule:
+    - cron: '0 14 * * 1-5'  # 10:00 AM ET
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    - run: pip install yfinance pandas ta
+    - env:
+        GMAIL_EMAIL: ${{ secrets.GMAIL_EMAIL }}
+        GMAIL_PASSWORD: ${{ secrets.GMAIL_PASSWORD }}
+        RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+      run: python market_scanner.py -mc 1 -adr
+```
+
+**File: .github/workflows/scan-mystocks.yml** (Portfolio only)
+```yaml
+name: My Portfolio Scan
+on:
+  schedule:
+    - cron: '30 20 * * 1-5'  # 4:30 PM ET
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    - run: pip install yfinance pandas ta
+    - env:
+        GMAIL_EMAIL: ${{ secrets.GMAIL_EMAIL }}
+        GMAIL_PASSWORD: ${{ secrets.GMAIL_PASSWORD }}
+        RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+      run: python market_scanner.py -mystocks
 ```
 
 ### GitHub Secrets Required

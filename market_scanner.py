@@ -157,6 +157,61 @@ class MarketScanner:
             print(f"⚠️ {csv_file} NOT FOUND")
         return []
     
+    def load_adr_tickers(self):
+        """Load ADR tickers - major international companies trading on US exchanges"""
+        # First try to load from file
+        csv_file = 'adr_tickers.csv'
+        if os.path.exists(csv_file):
+            try:
+                df = pd.read_csv(csv_file)
+                tickers = df['Symbol'].tolist()
+                print(f"✓ Loaded {len(tickers)} ADR tickers from CSV")
+                return tickers
+            except Exception as e:
+                print(f"✗ Error loading {csv_file}: {e}")
+        
+        # Fallback to built-in list of major ADRs
+        major_adrs = [
+            # China
+            'BABA', 'JD', 'PDD', 'BIDU', 'NIO', 'XPEV', 'LI', 'BILI', 'TME', 'IQ',
+            'TAL', 'EDU', 'VNET', 'WB', 'ZTO', 'YUMC', 'HTHT', 'ATHM', 'QFIN', 'FUTU',
+            'TIGR', 'KC', 'GOTU', 'MNSO', 'YMM', 'DADA', 'BZ', 'LEGN', 'ZLAB',
+            # Taiwan
+            'TSM', 'UMC', 'ASX', 'IMOS',
+            # Japan
+            'TM', 'SONY', 'HMC', 'MUFG', 'SMFG', 'MFG', 'NMR', 'NTDOY', 'IX',
+            # South Korea
+            'KB', 'SHG', 'WF', 'LPL',
+            # India
+            'INFY', 'WIT', 'IBN', 'HDB', 'SIFY', 'RDY', 'TTM', 'VEDL', 'WNS',
+            # Brazil
+            'VALE', 'PBR', 'ITUB', 'BBD', 'ABEV', 'SBS', 'GGB', 'SID', 'BRFS', 'PAGS',
+            'STNE', 'NU', 'XP', 'VTEX',
+            # Argentina
+            'MELI', 'YPF', 'GGAL', 'BMA', 'SUPV', 'GLOB',
+            # Chile
+            'SQM', 'BSAC', 'LTM',
+            # Mexico
+            'AMX', 'TV', 'KOF', 'BSMX',
+            # UK
+            'BP', 'SHEL', 'GSK', 'AZN', 'HSBC', 'RIO', 'BCS', 'LYG', 'NWG', 'BTI', 'DEO',
+            'VOD', 'NGG', 'RELX', 'LSXMK', 'ARMHY', 'JRI',
+            # Europe
+            'ASML', 'NVO', 'SAP', 'TTE', 'UL', 'SNY', 'ENB', 'SU', 'TD', 'BNS',
+            'BMO', 'CM', 'RY', 'SHOP', 'NVS', 'RHHBY', 'UBS', 'CS', 'DB', 'ING', 'ERIC',
+            'NOK', 'PHG', 'SPOT', 'MT', 'STLA',
+            # Australia
+            'BHP', 'RIO', 'WBK',
+            # South Africa
+            'GOLD', 'AU', 'HMY', 'DRD',
+            # Israel
+            'TEVA', 'NICE', 'CYBR', 'MNDY', 'WIX', 'FVRR', 'CHKP',
+            # Southeast Asia
+            'SE', 'GRAB',
+        ]
+        print(f"✓ Using built-in list of {len(major_adrs)} major ADRs")
+        return major_adrs
+    
     def get_dividend_yield(self, ticker_obj):
         """Get dividend yield for a ticker - FIXED VERSION with validation"""
         try:
@@ -193,7 +248,7 @@ class MarketScanner:
         except Exception as e:
             return 0.0
     
-    def load_all_tickers_with_sources(self):
+    def load_all_tickers_with_sources(self, include_adr=False):
         """Load all tickers and track their sources"""
         ticker_sources = {}
         
@@ -228,6 +283,15 @@ class MarketScanner:
             else:
                 ticker_sources[ticker] = 'IBD'
         
+        # Load ADRs if requested
+        if include_adr:
+            adr_tickers = self.load_adr_tickers()
+            for ticker in adr_tickers:
+                if ticker in ticker_sources:
+                    ticker_sources[ticker] += ', ADR'
+                else:
+                    ticker_sources[ticker] = 'ADR'
+        
         print(f"\n{'='*60}")
         print(f"TICKER LIST SUMMARY")
         print(f"{'='*60}")
@@ -236,6 +300,8 @@ class MarketScanner:
         print(f"  - NASDAQ 100: {len([t for t, s in ticker_sources.items() if 'NASDAQ 100' in s])}")
         print(f"  - Russell 2000 only: {len([t for t, s in ticker_sources.items() if s == 'Russell 2000'])}")
         print(f"  - IBD: {len([t for t, s in ticker_sources.items() if 'IBD' in s])}")
+        if include_adr:
+            print(f"  - ADR: {len([t for t, s in ticker_sources.items() if 'ADR' in s])}")
         print(f"{'='*60}\n")
         
         return ticker_sources
@@ -516,6 +582,12 @@ class MarketScanner:
         """Scan a single ticker with full data"""
         import time
         
+        # Normalize ticker format for Yahoo Finance
+        # BRK.B -> BRK-B, BF.B -> BF-B, etc.
+        original_ticker = ticker_symbol
+        if '.' in ticker_symbol and not ticker_symbol.endswith('.L'):  # Don't change London stocks
+            ticker_symbol = ticker_symbol.replace('.', '-')
+        
         # Add small delay to avoid rate limiting (0.1 seconds between requests)
         time.sleep(0.1)
         
@@ -644,7 +716,7 @@ class MarketScanner:
                 self.filter_reasons['first_exceptions'].append(f"{ticker_symbol}: {type(e).__name__}: {str(e)[:100]}")
             return None
     
-    def scan_with_priority(self):
+    def scan_with_priority(self, include_adr=False):
         """Scan watchlist first, then broad market"""
         
         print("\n" + "="*70)
@@ -691,7 +763,7 @@ class MarketScanner:
         print("PHASE 2: SCANNING BROAD MARKET")
         print("="*60)
         
-        all_tickers = self.load_all_tickers_with_sources()
+        all_tickers = self.load_all_tickers_with_sources(include_adr=include_adr)
         
         # Remove watchlist tickers
         for ticker in watchlist:
@@ -824,12 +896,12 @@ class MarketScanner:
             'ticker_issues': self.ticker_issues
         }
     
-    def run(self, mystocks_only=False):
+    def run(self, mystocks_only=False, include_adr=False):
         """Main scanner execution"""
         if mystocks_only:
             results = self.scan_mystocks_only()
         else:
-            results = self.scan_with_priority()
+            results = self.scan_with_priority(include_adr=include_adr)
         self.results = results
         
         print("\n" + "="*60)
@@ -917,6 +989,7 @@ if __name__ == "__main__":
     parser.add_argument('-eps', type=float, default=None, help='Minimum EPS growth %% (e.g., -eps 20 for 20%% growth)')
     parser.add_argument('-rev', type=float, default=None, help='Minimum revenue growth %% (e.g., -rev 15 for 15%% growth)')
     parser.add_argument('-mc', type=float, default=None, help='Minimum market cap in billions (e.g., -mc 1 for $1B+, default is 10)')
+    parser.add_argument('-adr', action='store_true', help='Include international ADRs (American Depositary Receipts)')
     
     args = parser.parse_args()
     
@@ -1051,7 +1124,7 @@ if __name__ == "__main__":
         
     else:
         # Full market scan
-        results = scanner.run(mystocks_only=False)
+        results = scanner.run(mystocks_only=False, include_adr=args.adr)
         
         # Apply growth filters if specified
         if args.eps is not None or args.rev is not None:
