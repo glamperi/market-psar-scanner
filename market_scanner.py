@@ -1071,6 +1071,7 @@ if __name__ == "__main__":
     parser.add_argument('-mystocks', action='store_true', help='Scan only mystocks.txt (your portfolio)')
     parser.add_argument('-friends', action='store_true', help='Scan only friends.txt (friend portfolio)')
     parser.add_argument('-shorts', action='store_true', help='Scan only shorts.txt (short candidates)')
+    parser.add_argument('-shortscan', action='store_true', help='Full market scan for short candidates (uses -mc, -adr filters)')
     parser.add_argument('-t', '--title', type=str, default=None, help='Custom report title (used with -friends)')
     parser.add_argument('-e', '--email', type=str, default=None, help='Additional email recipient')
     parser.add_argument('-eps', type=float, default=None, help='Minimum EPS growth %% (e.g., -eps 20 for 20%% growth)')
@@ -1219,6 +1220,28 @@ if __name__ == "__main__":
         print("\nGenerating shorts report...")
         from shorts_report import ShortsReport
         report = ShortsReport(results)
+        report.send_email(additional_email=args.email)
+    
+    elif args.shortscan:
+        # Full market scan for short candidates
+        results = scanner.run(mystocks_only=False, include_adr=args.adr)
+        
+        # Apply growth filters if specified
+        if args.eps is not None or args.rev is not None:
+            results = apply_growth_filters(results, args.eps, args.rev)
+        
+        # Filter to only SELL zone stocks (potential shorts)
+        sell_results = [r for r in results['all_results'] if not r.get('psar_bullish', True)]
+        results['all_results'] = sell_results
+        results['watchlist_results'] = []
+        results['broad_market_results'] = sell_results
+        
+        print(f"\n📉 Found {len(sell_results)} stocks in SELL zones (potential short candidates)")
+        
+        print("\nGenerating market short scan report...")
+        from shorts_report import ShortsReport
+        mc_val = args.mc if args.mc is not None else 10
+        report = ShortsReport(results, mc_filter=mc_val, include_adr=args.adr)
         report.send_email(additional_email=args.email)
         
     else:

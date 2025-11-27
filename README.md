@@ -289,6 +289,7 @@ python market_scanner.py -friends -t "Edward's Stocks" -e "edward@gmail.com"
 | `-mystocks` | Scan only mystocks.txt | `python market_scanner.py -mystocks` |
 | `-friends` | Scan only friends.txt | `python market_scanner.py -friends` |
 | `-shorts` | Scan only shorts.txt (short candidates) | `python market_scanner.py -shorts` |
+| `-shortscan` | Full market scan for short candidates | `python market_scanner.py -shortscan -mc 5` |
 | `-t "Title"` | Custom report title (with -friends) | `-t "Edward's Stocks"` |
 | `-e "email"` | Additional email recipient | `-e "friend@gmail.com"` |
 | `-mc 5` | Min market cap in billions (default: 10) | `-mc 1` for $1B+ |
@@ -353,7 +354,11 @@ python market_scanner.py -friends -t "High Growth Picks" -eps 25
 
 ### Short Candidates
 
-Analyze potential short candidates with squeeze risk warnings:
+Two ways to find short candidates:
+
+**Option 1: Watchlist scan (`-shorts`)**
+
+Scan your own list of potential shorts in `shorts.txt`:
 
 ```bash
 python market_scanner.py -shorts
@@ -369,6 +374,21 @@ CIFR
 # Meme stocks
 GME
 AMC
+```
+
+**Option 2: Market-wide scan (`-shortscan`)**
+
+Scan the entire market and find all stocks in SELL zones:
+
+```bash
+# Scan market for short candidates ($5B+ market cap)
+python market_scanner.py -shortscan -mc 5
+
+# Include international ADRs
+python market_scanner.py -shortscan -mc 5 -adr
+
+# Smaller companies
+python market_scanner.py -shortscan -mc 1 -adr
 ```
 
 **Short Score Components (max 100 points):**

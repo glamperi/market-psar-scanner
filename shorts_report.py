@@ -10,9 +10,12 @@ from datetime import datetime
 import os
 
 class ShortsReport:
-    def __init__(self, scan_results):
+    def __init__(self, scan_results, mc_filter=None, include_adr=False):
         self.scan_results = scan_results
         self.all_results = scan_results['all_results']
+        self.mc_filter = mc_filter
+        self.include_adr = include_adr
+        self.is_market_scan = mc_filter is not None  # True if -shortscan, False if -shorts
     
     def get_short_score(self, result):
         """Calculate short score (higher = better short candidate)
@@ -158,10 +161,21 @@ class ShortsReport:
         """
         
         # Header
+        if self.is_market_scan:
+            scan_type = "Market-Wide Short Scan"
+            filter_parts = [f"${self.mc_filter}B+ market cap"]
+            if self.include_adr:
+                filter_parts.append("incl. ADRs")
+            filter_desc = " | ".join(filter_parts)
+        else:
+            scan_type = "Short Watchlist Scan"
+            filter_desc = "shorts.txt"
+        
         html += f"""
         <div class="header">
-            <h1>🐻 Short Candidates Report</h1>
+            <h1>🐻 {scan_type}</h1>
             <p>Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+            <p>Filters: {filter_desc} | {len(scored_results)} stocks analyzed</p>
         </div>
         """
         
@@ -333,7 +347,10 @@ class ShortsReport:
         good_shorts = len([r for r in self.all_results if r.get('short_score', 0) >= 50 and not r.get('psar_bullish', True)])
         high_risk = len([r for r in self.all_results if r.get('short_percent') and r.get('short_percent') > 20])
         
-        subject = f"🐻 Short Candidates: {good_shorts} Good, {high_risk} Squeeze Risk"
+        if self.is_market_scan:
+            subject = f"🐻 Market Short Scan: {good_shorts} Candidates, {high_risk} Squeeze Risk"
+        else:
+            subject = f"🐻 Short Watchlist: {good_shorts} Good, {high_risk} Squeeze Risk"
         
         # Build message
         msg = MIMEMultipart('alternative')
