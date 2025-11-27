@@ -20,6 +20,7 @@ class MarketScanner:
         self.ibd_stats = {}
         self.min_market_cap = min_market_cap_billions * 1_000_000_000  # Convert to dollars
         self.min_market_cap_billions = min_market_cap_billions
+        self.filter_reasons = {}  # Track why stocks are filtered
         
     def load_custom_watchlist(self):
         """Load priority watchlist from custom_watchlist.txt"""
@@ -32,12 +33,19 @@ class MarketScanner:
                 # Use utf-8-sig to handle BOM (Byte Order Mark) that some editors add
                 with open(watchlist_file, 'r', encoding='utf-8-sig') as f:
                     for line in f:
-                        # Strip whitespace, BOM characters, and convert to uppercase
-                        ticker = line.strip().upper()
-                        # Remove any hidden characters
+                        # Strip whitespace first
+                        line = line.strip()
+                        
+                        # Skip empty lines and comments BEFORE processing
+                        if not line or line.startswith('#'):
+                            continue
+                        
+                        # Now process the ticker - uppercase and remove hidden chars
+                        ticker = line.upper()
                         ticker = ''.join(c for c in ticker if c.isalnum() or c in '-.')
-                        # Skip empty lines, comments, and duplicates
-                        if ticker and not ticker.startswith('#') and ticker not in seen:
+                        
+                        # Skip empty result or duplicates
+                        if ticker and ticker not in seen:
                             watchlist.append(ticker)
                             seen.add(ticker)
                         elif ticker and ticker in seen:
@@ -106,38 +114,47 @@ class MarketScanner:
     
     def load_sp500_tickers(self):
         """Load S&P 500 from CSV"""
-        if os.path.exists('sp500_tickers.csv'):
+        csv_file = 'sp500_tickers.csv'
+        if os.path.exists(csv_file):
             try:
-                df = pd.read_csv('sp500_tickers.csv')
+                df = pd.read_csv(csv_file)
                 tickers = df['Symbol'].tolist()
                 print(f"✓ Loaded {len(tickers)} S&P 500 tickers from CSV")
                 return tickers
             except Exception as e:
-                print(f"✗ Error loading sp500_tickers.csv: {e}")
+                print(f"✗ Error loading {csv_file}: {e}")
+        else:
+            print(f"⚠️ {csv_file} NOT FOUND in {os.getcwd()}")
         return []
     
     def load_nasdaq100_tickers(self):
         """Load NASDAQ 100 from CSV"""
-        if os.path.exists('nasdaq100_tickers.csv'):
+        csv_file = 'nasdaq100_tickers.csv'
+        if os.path.exists(csv_file):
             try:
-                df = pd.read_csv('nasdaq100_tickers.csv')
+                df = pd.read_csv(csv_file)
                 tickers = df['Symbol'].tolist()
                 print(f"✓ Loaded {len(tickers)} NASDAQ 100 tickers from CSV")
                 return tickers
             except Exception as e:
-                print(f"✗ Error loading nasdaq100_tickers.csv: {e}")
+                print(f"✗ Error loading {csv_file}: {e}")
+        else:
+            print(f"⚠️ {csv_file} NOT FOUND")
         return []
     
     def load_russell2000_tickers(self):
         """Load Russell 2000 from CSV"""
-        if os.path.exists('russell2000_tickers.csv'):
+        csv_file = 'russell2000_tickers.csv'
+        if os.path.exists(csv_file):
             try:
-                df = pd.read_csv('russell2000_tickers.csv')
+                df = pd.read_csv(csv_file)
                 tickers = df['Symbol'].tolist()
                 print(f"✓ Loaded {len(tickers)} Russell 2000 tickers from CSV")
                 return tickers
             except Exception as e:
-                print(f"✗ Error loading russell2000_tickers.csv: {e}")
+                print(f"✗ Error loading {csv_file}: {e}")
+        else:
+            print(f"⚠️ {csv_file} NOT FOUND")
         return []
     
     def get_dividend_yield(self, ticker_obj):
@@ -497,11 +514,33 @@ class MarketScanner:
     
     def scan_ticker_full(self, ticker_symbol, source="Unknown", skip_market_cap_filter=False):
         """Scan a single ticker with full data"""
+        import time
+        
+        # Add small delay to avoid rate limiting (0.1 seconds between requests)
+        time.sleep(0.1)
+        
         try:
             ticker_obj = yf.Ticker(ticker_symbol)
-            hist = ticker_obj.history(period="6mo")
             
-            if hist.empty or len(hist) < 50:
+            # Try to get history with retry on rate limit
+            max_retries = 2
+            for attempt in range(max_retries):
+                try:
+                    hist = ticker_obj.history(period="6mo")
+                    break
+                except Exception as e:
+                    if 'rate' in str(e).lower() or '429' in str(e):
+                        if attempt < max_retries - 1:
+                            time.sleep(5)  # Wait 5 seconds on rate limit
+                            continue
+                    raise e
+            
+            if hist.empty:
+                self.filter_reasons['empty_history'] = self.filter_reasons.get('empty_history', 0) + 1
+                return None
+            
+            if len(hist) < 50:
+                self.filter_reasons['short_history'] = self.filter_reasons.get('short_history', 0) + 1
                 return None
             
             # Get company info
@@ -513,16 +552,31 @@ class MarketScanner:
                 quote_type = info.get('quoteType', '') or ''
                 
                 # Growth estimates from yfinance
-                # earningsGrowth = next year EPS growth estimate (as decimal, e.g., 0.25 = 25%)
-                # revenueGrowth = next year revenue growth estimate
-                eps_growth = info.get('earningsGrowth', None)
-                rev_growth = info.get('revenueGrowth', None)
+                # Try multiple sources for growth data
                 
-                # Convert to percentage if available
-                eps_growth_pct = (eps_growth * 100) if eps_growth is not None else None
-                rev_growth_pct = (rev_growth * 100) if rev_growth is not None else None
+                # EPS Growth: Calculate from forward vs trailing EPS if available
+                forward_eps = info.get('forwardEps')
+                trailing_eps = info.get('trailingEps')
+                earnings_growth_raw = info.get('earningsGrowth')  # This is often trailing YoY
                 
-            except:
+                if forward_eps and trailing_eps and trailing_eps > 0:
+                    # Calculate implied forward growth
+                    eps_growth_pct = ((forward_eps - trailing_eps) / abs(trailing_eps)) * 100
+                elif earnings_growth_raw is not None:
+                    # Fallback to earningsGrowth (trailing)
+                    eps_growth_pct = earnings_growth_raw * 100
+                else:
+                    eps_growth_pct = None
+                
+                # Revenue Growth: Use revenueGrowth if available
+                rev_growth_raw = info.get('revenueGrowth')
+                if rev_growth_raw is not None:
+                    rev_growth_pct = rev_growth_raw * 100
+                else:
+                    rev_growth_pct = None
+                
+            except Exception as e:
+                self.filter_reasons['info_error'] = self.filter_reasons.get('info_error', 0) + 1
                 company_name = ticker_symbol
                 market_cap = 0
                 sector = ''
@@ -533,6 +587,7 @@ class MarketScanner:
             # Market cap filter: uses self.min_market_cap (default $10B)
             if not skip_market_cap_filter:
                 if market_cap < self.min_market_cap:
+                    self.filter_reasons['market_cap'] = self.filter_reasons.get('market_cap', 0) + 1
                     return None
             
             # Detect REIT or Limited Partnership
@@ -552,6 +607,7 @@ class MarketScanner:
             # Calculate indicators
             indicators = self.calculate_indicators(hist)
             if not indicators:
+                self.filter_reasons['indicators_failed'] = self.filter_reasons.get('indicators_failed', 0) + 1
                 return None
             
             # Get dividend yield - FIXED
@@ -580,6 +636,12 @@ class MarketScanner:
             return result
             
         except Exception as e:
+            self.filter_reasons['exception'] = self.filter_reasons.get('exception', 0) + 1
+            # Capture first few error messages for debugging
+            if 'first_exceptions' not in self.filter_reasons:
+                self.filter_reasons['first_exceptions'] = []
+            if len(self.filter_reasons['first_exceptions']) < 3:
+                self.filter_reasons['first_exceptions'].append(f"{ticker_symbol}: {type(e).__name__}: {str(e)[:100]}")
             return None
     
     def scan_with_priority(self):
@@ -641,6 +703,10 @@ class MarketScanner:
         
         broad_market_results = []
         progress_count = 0
+        error_count = 0
+        no_data_count = 0
+        market_cap_filtered = 0
+        first_error = None
         
         for ticker, source in all_tickers.items():
             try:
@@ -650,15 +716,25 @@ class MarketScanner:
                 if result:
                     result['is_watchlist'] = False
                     broad_market_results.append(result)
+                else:
+                    no_data_count += 1
                 
                 progress_count += 1
                 if progress_count % 50 == 0:
                     elapsed_pct = progress_count / len(all_tickers) * 100
-                    print(f"Progress: {progress_count}/{len(all_tickers)} ({elapsed_pct:.1f}%)")
-            except:
+                    print(f"Progress: {progress_count}/{len(all_tickers)} ({elapsed_pct:.1f}%) - Found: {len(broad_market_results)}, No data: {no_data_count}, Errors: {error_count}")
+            except Exception as e:
+                error_count += 1
+                if first_error is None:
+                    first_error = f"{ticker}: {str(e)}"
                 continue
         
         print(f"\n✓ Broad market scan complete: {len(broad_market_results)} signals found")
+        print(f"   No data/filtered: {no_data_count}, Errors: {error_count}")
+        if first_error:
+            print(f"   First error was: {first_error}")
+        if self.filter_reasons:
+            print(f"   Filter breakdown: {self.filter_reasons}")
         
         # Combine results
         all_results = watchlist_results + broad_market_results
@@ -687,9 +763,13 @@ class MarketScanner:
             try:
                 with open(mystocks_file, 'r', encoding='utf-8-sig') as f:
                     for line in f:
-                        ticker = line.strip().upper()
+                        line = line.strip()
+                        # Skip empty lines and comments BEFORE processing
+                        if not line or line.startswith('#'):
+                            continue
+                        ticker = line.upper()
                         ticker = ''.join(c for c in ticker if c.isalnum() or c in '-.')
-                        if ticker and not ticker.startswith('#') and ticker not in seen:
+                        if ticker and ticker not in seen:
                             mystocks.append(ticker)
                             seen.add(ticker)
                 
@@ -775,9 +855,13 @@ class MarketScanner:
             try:
                 with open(friends_file, 'r', encoding='utf-8-sig') as f:
                     for line in f:
-                        ticker = line.strip().upper()
+                        line = line.strip()
+                        # Skip empty lines and comments BEFORE processing
+                        if not line or line.startswith('#'):
+                            continue
+                        ticker = line.upper()
                         ticker = ''.join(c for c in ticker if c.isalnum() or c in '-.')
-                        if ticker and not ticker.startswith('#') and ticker not in seen:
+                        if ticker and ticker not in seen:
                             friends_stocks.append(ticker)
                             seen.add(ticker)
                 
@@ -843,29 +927,54 @@ if __name__ == "__main__":
         scanner = MarketScanner()
     
     def apply_growth_filters(results, eps_min=None, rev_min=None):
-        """Filter results by EPS and/or revenue growth thresholds"""
+        """Filter results by EPS and/or revenue growth thresholds.
+        
+        Logic: 
+        - If a filter is specified and stock HAS data: must meet threshold
+        - If a filter is specified and stock has NO data: INCLUDE (don't penalize missing data)
+        - Use -eps-strict or -rev-strict to require data exists
+        """
         if eps_min is None and rev_min is None:
             return results
         
         filtered = []
+        eps_available = 0
+        rev_available = 0
+        eps_passed = 0
+        rev_passed = 0
+        
         for r in results['all_results']:
             eps_ok = True
             rev_ok = True
             
-            if eps_min is not None:
-                eps_growth = r.get('eps_growth')
-                if eps_growth is None or eps_growth < eps_min:
+            # Track data availability
+            has_eps = r.get('eps_growth') is not None
+            has_rev = r.get('rev_growth') is not None
+            
+            if has_eps:
+                eps_available += 1
+            if has_rev:
+                rev_available += 1
+            
+            # EPS filter: only reject if data EXISTS and is below threshold
+            if eps_min is not None and has_eps:
+                if r.get('eps_growth') >= eps_min:
+                    eps_passed += 1
+                else:
                     eps_ok = False
             
-            if rev_min is not None:
-                rev_growth = r.get('rev_growth')
-                if rev_growth is None or rev_growth < rev_min:
+            # Revenue filter: only reject if data EXISTS and is below threshold  
+            if rev_min is not None and has_rev:
+                if r.get('rev_growth') >= rev_min:
+                    rev_passed += 1
+                else:
                     rev_ok = False
             
             if eps_ok and rev_ok:
                 filtered.append(r)
         
         # Update results with filtered list
+        original_count = len(results['all_results'])
         results['all_results'] = filtered
         results['watchlist_results'] = [r for r in filtered if r.get('is_watchlist', False)]
         results['broad_market_results'] = [r for r in filtered if not r.get('is_watchlist', False)]
@@ -876,7 +985,13 @@ if __name__ == "__main__":
         if rev_min is not None:
             filter_desc.append(f"Rev≥{rev_min}%")
         
-        print(f"\n✓ Growth filter applied ({', '.join(filter_desc)}): {len(filtered)} stocks passed")
+        print(f"\n📊 Growth data availability out of {original_count} stocks:")
+        if eps_min is not None:
+            print(f"   EPS data: {eps_available} stocks have data, {eps_passed} passed ≥{eps_min}%")
+        if rev_min is not None:
+            print(f"   Revenue data: {rev_available} stocks have data, {rev_passed} passed ≥{rev_min}%")
+        print(f"✓ After filter ({', '.join(filter_desc)}): {len(filtered)} stocks remain")
+        print(f"   (Stocks without growth data are included, not excluded)")
         
         return results
     
