@@ -16,6 +16,7 @@ on:
           - market
           - mystocks
           - friends
+          - shorts
       market_cap:
         description: 'Min market cap in billions'
         required: false
@@ -80,28 +81,32 @@ jobs:
           CMD="$CMD -mystocks"
         elif [ "$SCAN_TYPE" == "friends" ]; then
           CMD="$CMD -friends"
+        elif [ "$SCAN_TYPE" == "shorts" ]; then
+          CMD="$CMD -shorts"
         fi
         
-        # Market cap (default: 5B for scheduled, or input value)
+        # Market cap (default: 5B for scheduled, or input value) - only for market scan
         MC="${{ github.event.inputs.market_cap || '5' }}"
         if [ "$SCAN_TYPE" == "market" ]; then
           CMD="$CMD -mc $MC"
         fi
         
-        # ADR flag (default: true for scheduled runs)
+        # ADR flag (default: true for scheduled runs) - only for market scan
         ADR="${{ github.event.inputs.include_adr }}"
-        if [ "$ADR" != "false" ]; then
+        if [ "$SCAN_TYPE" == "market" ] && [ "$ADR" != "false" ]; then
           CMD="$CMD -adr"
         fi
         
-        # Growth filters (only if provided)
-        EPS="${{ github.event.inputs.eps_growth }}"
-        REV="${{ github.event.inputs.rev_growth }}"
-        if [ -n "$EPS" ]; then
-          CMD="$CMD -eps $EPS"
-        fi
-        if [ -n "$REV" ]; then
-          CMD="$CMD -rev $REV"
+        # Growth filters (only if provided) - not for shorts
+        if [ "$SCAN_TYPE" != "shorts" ]; then
+          EPS="${{ github.event.inputs.eps_growth }}"
+          REV="${{ github.event.inputs.rev_growth }}"
+          if [ -n "$EPS" ]; then
+            CMD="$CMD -eps $EPS"
+          fi
+          if [ -n "$REV" ]; then
+            CMD="$CMD -rev $REV"
+          fi
         fi
         
         # Extra email
