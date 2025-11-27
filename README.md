@@ -288,6 +288,7 @@ python market_scanner.py -friends -t "Edward's Stocks" -e "edward@gmail.com"
 |------|-------------|---------|
 | `-mystocks` | Scan only mystocks.txt | `python market_scanner.py -mystocks` |
 | `-friends` | Scan only friends.txt | `python market_scanner.py -friends` |
+| `-shorts` | Scan only shorts.txt (short candidates) | `python market_scanner.py -shorts` |
 | `-t "Title"` | Custom report title (with -friends) | `-t "Edward's Stocks"` |
 | `-e "email"` | Additional email recipient | `-e "friend@gmail.com"` |
 | `-mc 5` | Min market cap in billions (default: 10) | `-mc 1` for $1B+ |
@@ -350,11 +351,63 @@ python market_scanner.py -friends -t "High Growth Picks" -eps 25
 
 **Note:** Growth data comes from Yahoo Finance analyst estimates. Not all stocks have estimates available - those without data are filtered out when using these flags.
 
+### Short Candidates
+
+Analyze potential short candidates with squeeze risk warnings:
+
+```bash
+python market_scanner.py -shorts
+```
+
+Create a `shorts.txt` file with tickers you're considering shorting:
+
+```
+# Potential short candidates
+BYND
+IREN
+CIFR
+# Meme stocks
+GME
+AMC
+```
+
+**Short Score Components (max 100 points):**
+
+| Factor | Points | Why It Matters |
+|--------|--------|----------------|
+| Deep SELL zone (PSAR < -5%) | +25 | Confirmed downtrend |
+| Below 50-day MA | +15 | Bearish structure |
+| Low momentum (1-4) | +20 | Still deteriorating |
+| OBV confirms downtrend | +15 | Volume supports the drop |
+| Negative EPS growth | +15 | Fundamental weakness |
+| Low short interest (<5%) | +10 | Trade not crowded |
+
+**Penalties (avoid these):**
+
+| Warning | Penalty | Risk |
+|---------|---------|------|
+| High short interest (>25%) | -30 | 🔴 SQUEEZE RISK |
+| High momentum (7+) | -20 | Trend improving |
+| RSI oversold (<30) | -15 | Bounce risk |
+| In BUY zone | -20 | Wrong direction |
+
+**Squeeze Risk Levels:**
+- 🟢 Low (<15% SI) - Safe to short
+- 🟡 Moderate (15-25% SI) - Caution
+- 🔴 High (>25% SI) - SQUEEZE RISK!
+
+**Ideal Short Candidate:**
+- Score ≥ 50
+- In SELL zone (PSAR < -2%)
+- Low short interest (<15%)
+- Below 50-day MA
+- Low momentum (trend still weakening)
+
 ---
 
 ## File Formats
 
-### Ticker Lists (custom_watchlist.txt, mystocks.txt, friends.txt)
+### Ticker Lists (custom_watchlist.txt, mystocks.txt, friends.txt, shorts.txt)
 
 Simple text file, one ticker per line:
 ```

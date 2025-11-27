@@ -647,6 +647,12 @@ class MarketScanner:
                 else:
                     rev_growth_pct = None
                 
+                # Short interest data for short candidates
+                short_percent = info.get('shortPercentOfFloat')  # As decimal, e.g., 0.15 = 15%
+                if short_percent is not None:
+                    short_percent = short_percent * 100  # Convert to percentage
+                short_ratio = info.get('shortRatio')  # Days to cover
+                
             except Exception as e:
                 self.filter_reasons['info_error'] = self.filter_reasons.get('info_error', 0) + 1
                 company_name = ticker_symbol
@@ -655,6 +661,8 @@ class MarketScanner:
                 quote_type = ''
                 eps_growth_pct = None
                 rev_growth_pct = None
+                short_percent = None
+                short_ratio = None
             
             # Market cap filter: uses self.min_market_cap (default $10B)
             if not skip_market_cap_filter:
@@ -689,7 +697,7 @@ class MarketScanner:
             ibd_data = self.ibd_stats.get(ticker_symbol, {})
             
             result = {
-                'ticker': ticker_symbol,
+                'ticker': original_ticker,  # Use original ticker format for display
                 'company': company_name if company_name else ticker_symbol,
                 'source': source,
                 'dividend_yield': dividend_yield,
@@ -698,6 +706,8 @@ class MarketScanner:
                 'is_lp': is_lp,
                 'eps_growth': eps_growth_pct,
                 'rev_growth': rev_growth_pct,
+                'short_percent': short_percent,  # Short interest as % of float
+                'short_ratio': short_ratio,      # Days to cover
                 'composite': ibd_data.get('composite', 'N/A'),
                 'eps': ibd_data.get('eps', 'N/A'),
                 'rs': ibd_data.get('rs', 'N/A'),
@@ -976,6 +986,82 @@ class MarketScanner:
             'all_results': all_results,
             'ticker_issues': self.ticker_issues
         }
+    
+    def scan_shorts_only(self):
+        """Scan only stocks from shorts.txt - potential short candidates"""
+        
+        print("\n" + "="*70)
+        print(" "*15 + "SHORT CANDIDATES SCANNER")
+        print("="*70)
+        print(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print("="*70)
+        
+        shorts_file = 'shorts.txt'
+        short_stocks = []
+        seen = set()
+        
+        if os.path.exists(shorts_file):
+            try:
+                with open(shorts_file, 'r', encoding='utf-8-sig') as f:
+                    for line in f:
+                        line = line.strip()
+                        # Skip empty lines and comments BEFORE processing
+                        if not line or line.startswith('#'):
+                            continue
+                        ticker = line.upper()
+                        ticker = ''.join(c for c in ticker if c.isalnum() or c in '-.')
+                        if ticker and ticker not in seen:
+                            short_stocks.append(ticker)
+                            seen.add(ticker)
+                
+                print(f"\n✓ Loaded {len(short_stocks)} tickers from shorts.txt")
+            except Exception as e:
+                print(f"✗ Error loading shorts.txt: {e}")
+                return {'watchlist_results': [], 'broad_market_results': [], 'all_results': [], 'ticker_issues': []}
+        else:
+            print(f"✗ shorts.txt not found!")
+            return {'watchlist_results': [], 'broad_market_results': [], 'all_results': [], 'ticker_issues': []}
+        
+        print(f"\nScanning {len(short_stocks)} potential short candidates...")
+        
+        all_results = []
+        
+        for ticker in short_stocks:
+            try:
+                result = self.scan_ticker_full(ticker, source="Shorts", skip_market_cap_filter=True)
+                if result:
+                    result['is_watchlist'] = True
+                    all_results.append(result)
+                    
+                    zone = result.get('psar_zone', 'UNKNOWN')
+                    short_pct = result.get('short_percent')
+                    short_pct_str = f"{short_pct:.1f}%" if short_pct else "N/A"
+                    
+                    # Flag squeeze risk
+                    squeeze_warn = " ⚠️SQUEEZE RISK" if short_pct and short_pct > 20 else ""
+                    
+                    print(f"  {ticker}: {zone} (PSAR: {result['psar_distance']:+.2f}%, SI: {short_pct_str}){squeeze_warn}")
+                else:
+                    print(f"  {ticker}: No data")
+            except Exception as e:
+                print(f"  {ticker}: ERROR - {str(e)}")
+                continue
+        
+        print(f"\n✓ Shorts scan complete: {len(all_results)}/{len(short_stocks)} successful")
+        
+        # Analyze short candidates
+        sells = [r for r in all_results if not r['psar_bullish']]
+        high_si = [r for r in all_results if r.get('short_percent') and r.get('short_percent') > 20]
+        
+        print(f"  🔴 In SELL zone: {len(sells)}")
+        print(f"  ⚠️ High short interest (>20%): {len(high_si)}")
+        
+        return {
+            'watchlist_results': all_results,
+            'broad_market_results': [],
+            'all_results': all_results,
+            'ticker_issues': self.ticker_issues
+        }
 
 if __name__ == "__main__":
     import sys
@@ -984,6 +1070,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='PSAR Market Scanner')
     parser.add_argument('-mystocks', action='store_true', help='Scan only mystocks.txt (your portfolio)')
     parser.add_argument('-friends', action='store_true', help='Scan only friends.txt (friend portfolio)')
+    parser.add_argument('-shorts', action='store_true', help='Scan only shorts.txt (short candidates)')
     parser.add_argument('-t', '--title', type=str, default=None, help='Custom report title (used with -friends)')
     parser.add_argument('-e', '--email', type=str, default=None, help='Additional email recipient')
     parser.add_argument('-eps', type=float, default=None, help='Minimum EPS growth %% (e.g., -eps 20 for 20%% growth)')
@@ -1121,6 +1208,18 @@ if __name__ == "__main__":
         # Use custom title if provided
         custom_title = args.title if args.title else "Friends Portfolio"
         report.send_email(additional_email=args.email, custom_title=custom_title)
+    
+    elif args.shorts:
+        results = scanner.scan_shorts_only()
+        scanner.results = results
+        print("\n" + "="*60)
+        print("✓ SCAN COMPLETE!")
+        print("="*60)
+        
+        print("\nGenerating shorts report...")
+        from shorts_report import ShortsReport
+        report = ShortsReport(results)
+        report.send_email(additional_email=args.email)
         
     else:
         # Full market scan
