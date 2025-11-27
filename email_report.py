@@ -1,3 +1,8 @@
+"""
+Market Scanner Email Report Generator
+Groups stocks by PSAR zones with Momentum Score (1-10)
+"""
+
 import os
 import json
 import smtplib
@@ -5,22 +10,21 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
 
-# File to track exits over 7 days
 EXIT_HISTORY_FILE = 'exit_history.json'
 
 class EmailReport:
-    def __init__(self, scan_results):
+    def __init__(self, scan_results, eps_filter=None, rev_filter=None, mc_filter=None):
         self.scan_results = scan_results
         self.all_results = scan_results['all_results']
         self.watchlist_results = scan_results['watchlist_results']
-        self.data_warnings = scan_results.get('data_warnings', [])
+        self.eps_filter = eps_filter
+        self.rev_filter = rev_filter
+        self.mc_filter = mc_filter if mc_filter else 10  # Default $10B
         
-        # Load and update exit history
         self.exit_history = self.load_exit_history()
         self.recent_exits = self.update_exit_history()
         
     def load_exit_history(self):
-        """Load exit history from JSON file"""
         if os.path.exists(EXIT_HISTORY_FILE):
             try:
                 with open(EXIT_HISTORY_FILE, 'r') as f:
@@ -30,568 +34,354 @@ class EmailReport:
         return {}
     
     def save_exit_history(self):
-        """Save exit history to JSON file"""
         try:
             with open(EXIT_HISTORY_FILE, 'w') as f:
                 json.dump(self.exit_history, f, indent=2)
-        except Exception as e:
-            print(f"Warning: Could not save exit history: {e}")
+        except:
+            pass
     
     def update_exit_history(self):
-        """
-        Track stocks that changed from BUY to SELL.
-        Returns list of exits in the last 7 days.
-        """
         now = datetime.now()
         cutoff = now - timedelta(days=7)
         
-        # Get current PSAR buy tickers
-        current_buys = set(r['ticker'] for r in self.all_results if r['psar_bullish'])
-        current_sells = {r['ticker']: r for r in self.all_results if not r['psar_bullish']}
+        current_buys = set(r['ticker'] for r in self.all_results if r.get('psar_zone') in ['STRONG_BUY', 'BUY'])
+        current_others = {r['ticker']: r for r in self.all_results if r.get('psar_zone') not in ['STRONG_BUY', 'BUY']}
         
-        # Check previous buys that are now sells (new exits)
         previous_buys = set(self.exit_history.get('previous_buys', []))
         
         new_exits = []
         for ticker in previous_buys:
-            if ticker in current_sells and ticker not in current_buys:
-                # This stock was a buy before, now it's a sell = EXIT
-                result = current_sells[ticker]
-                exit_entry = {
+            if ticker in current_others and ticker not in current_buys:
+                result = current_others[ticker]
+                new_exits.append({
                     'ticker': ticker,
                     'exit_date': now.isoformat(),
                     'exit_price': result['price'],
-                    'company': result.get('company', ticker),
-                    'psar_distance': result.get('psar_distance', 0),
-                    'day_change': result.get('day_change', 0),
-                    'indicators': {
-                        'macd': result.get('has_macd', False),
-                        'bb': result.get('has_bb', False),
-                        'willr': result.get('has_willr', False),
-                        'coppock': result.get('has_coppock', False),
-                        'ultimate': result.get('has_ultimate', False)
-                    }
-                }
-                new_exits.append(exit_entry)
+                    'psar_zone': result.get('psar_zone', 'UNKNOWN'),
+                    'psar_momentum': result.get('psar_momentum', 5),
+                })
         
-        # Add new exits to history
-        exits_list = self.exit_history.get('exits', [])
-        exits_list.extend(new_exits)
+        exits_list = self.exit_history.get('exits', []) + new_exits
+        recent_exits = [e for e in exits_list if datetime.fromisoformat(e['exit_date']) >= cutoff]
         
-        # Filter to last 7 days only
-        recent_exits = []
-        for exit_entry in exits_list:
-            try:
-                exit_date = datetime.fromisoformat(exit_entry['exit_date'])
-                if exit_date >= cutoff:
-                    recent_exits.append(exit_entry)
-            except:
-                continue
-        
-        # Update history
         self.exit_history = {
             'previous_buys': list(current_buys),
             'exits': recent_exits,
             'last_updated': now.isoformat()
         }
-        
         self.save_exit_history()
-        
-        # Sort by exit date, most recent first
-        recent_exits.sort(key=lambda x: x['exit_date'], reverse=True)
-        
-        return recent_exits
+        return sorted(recent_exits, key=lambda x: x['exit_date'], reverse=True)
     
-    def get_indicator_symbols(self, result):
-        """Get checkmark/X symbols for indicators with colors"""
+    def get_indicator_symbols(self, r):
         def sym(val):
             return "<span style='color:#27ae60;'>✓</span>" if val else "<span style='color:#e74c3c;'>✗</span>"
-        
-        macd_sym = sym(result.get('has_macd', False))
-        bb_sym = sym(result.get('has_bb', False))
-        willr_sym = sym(result.get('has_willr', False))
-        copp_sym = sym(result.get('has_coppock', False))
-        ult_sym = sym(result.get('has_ultimate', False))
-        
-        return f"MACD {macd_sym} | BB {bb_sym} | Will {willr_sym} | Copp {copp_sym} | Ult {ult_sym}"
+        return f"M{sym(r.get('has_macd'))} B{sym(r.get('has_bb'))} W{sym(r.get('has_willr'))} C{sym(r.get('has_coppock'))} U{sym(r.get('has_ultimate'))}"
     
-    def get_exit_indicator_symbols(self, indicators_dict):
-        """Get indicator symbols from exit history format"""
-        def sym(val):
-            return "<span style='color:#27ae60;'>✓</span>" if val else "<span style='color:#e74c3c;'>✗</span>"
-        
-        macd_sym = sym(indicators_dict.get('macd', False))
-        bb_sym = sym(indicators_dict.get('bb', False))
-        willr_sym = sym(indicators_dict.get('willr', False))
-        copp_sym = sym(indicators_dict.get('coppock', False))
-        ult_sym = sym(indicators_dict.get('ultimate', False))
-        
-        return f"MACD {macd_sym} | BB {bb_sym} | Will {willr_sym} | Copp {copp_sym} | Ult {ult_sym}"
+    def get_obv_display(self, obv_status):
+        """Get OBV status display"""
+        if obv_status == 'CONFIRM':
+            return "<span style='color:#27ae60;'>🟢</span>"
+        elif obv_status == 'DIVERGE':
+            return "<span style='color:#c0392b;'>🔴</span>"
+        else:
+            return "<span style='color:#f39c12;'>🟡</span>"
+    
+    def get_zone_color(self, zone):
+        return {'STRONG_BUY': '#1e8449', 'BUY': '#27ae60', 'NEUTRAL': '#f39c12', 'WEAK': '#e67e22', 'SELL': '#c0392b'}.get(zone, '#7f8c8d')
+    
+    def get_zone_emoji(self, zone):
+        return {'STRONG_BUY': '🟢🟢', 'BUY': '🟢', 'NEUTRAL': '🟡', 'WEAK': '🟠', 'SELL': '🔴'}.get(zone, '⚪')
+    
+    def get_momentum_display(self, momentum):
+        """Get colored momentum score display"""
+        if momentum >= 8:
+            return f"<span style='color:#1e8449; font-weight:bold;'>{momentum}</span>"
+        elif momentum >= 6:
+            return f"<span style='color:#27ae60;'>{momentum}</span>"
+        elif momentum >= 4:
+            return f"<span style='color:#f39c12;'>{momentum}</span>"
+        elif momentum >= 2:
+            return f"<span style='color:#e67e22;'>{momentum}</span>"
+        else:
+            return f"<span style='color:#c0392b;'>{momentum}</span>"
     
     def build_email_body(self):
-        """Build email in the EXACT order specified with proper colors"""
+        # Count total scanned (before market cap filter) - estimate from typical scan
+        total_scanned = len(self.all_results) + 2000  # Rough estimate of filtered stocks
         
         html = """
         <html>
         <head>
             <style>
                 body { font-family: Arial, sans-serif; font-size: 12px; }
-                table { border-collapse: collapse; width: 100%; margin: 15px 0; }
+                table { border-collapse: collapse; width: 100%; margin: 10px 0; }
                 th { padding: 8px; text-align: left; font-size: 11px; }
                 td { padding: 6px; border-bottom: 1px solid #ddd; font-size: 11px; }
                 tr:hover { background-color: #f5f5f5; }
                 
-                /* Color coded section headers */
-                .section-green { background-color: #27ae60; color: white; padding: 12px; margin: 25px 0 10px 0; font-size: 14px; font-weight: bold; }
-                .section-red { background-color: #c0392b; color: white; padding: 12px; margin: 25px 0 10px 0; font-size: 14px; font-weight: bold; }
-                .section-yellow { background-color: #f39c12; color: white; padding: 12px; margin: 25px 0 10px 0; font-size: 14px; font-weight: bold; }
-                .section-blue { background-color: #2980b9; color: white; padding: 12px; margin: 25px 0 10px 0; font-size: 14px; font-weight: bold; }
-                .section-purple { background-color: #8e44ad; color: white; padding: 12px; margin: 25px 0 10px 0; font-size: 14px; font-weight: bold; }
-                .section-gray { background-color: #7f8c8d; color: white; padding: 12px; margin: 25px 0 10px 0; font-size: 14px; font-weight: bold; }
+                .section-toptier { background-color: #145a32; color: white; padding: 12px; margin: 20px 0 10px 0; font-size: 14px; font-weight: bold; }
+                .section-strongbuy { background-color: #1e8449; color: white; padding: 12px; margin: 20px 0 10px 0; font-size: 14px; font-weight: bold; }
+                .section-buy { background-color: #27ae60; color: white; padding: 12px; margin: 20px 0 10px 0; font-size: 14px; font-weight: bold; }
+                .section-neutral { background-color: #f39c12; color: white; padding: 12px; margin: 20px 0 10px 0; font-size: 14px; font-weight: bold; }
+                .section-weak { background-color: #e67e22; color: white; padding: 12px; margin: 20px 0 10px 0; font-size: 14px; font-weight: bold; }
+                .section-sell { background-color: #c0392b; color: white; padding: 12px; margin: 20px 0 10px 0; font-size: 14px; font-weight: bold; }
+                .section-purple { background-color: #8e44ad; color: white; padding: 12px; margin: 20px 0 10px 0; font-size: 14px; font-weight: bold; }
+                .section-gray { background-color: #7f8c8d; color: white; padding: 12px; margin: 20px 0 10px 0; font-size: 14px; font-weight: bold; }
+                .section-red { background-color: #c0392b; color: white; padding: 12px; margin: 20px 0 10px 0; font-size: 14px; font-weight: bold; }
+                .section-yellow { background-color: #f39c12; color: white; padding: 12px; margin: 20px 0 10px 0; font-size: 14px; font-weight: bold; }
                 
-                /* Table header colors */
-                .th-green { background-color: #27ae60; color: white; }
-                .th-red { background-color: #c0392b; color: white; }
-                .th-yellow { background-color: #e67e22; color: white; }
-                .th-blue { background-color: #2980b9; color: white; }
+                .th-toptier { background-color: #145a32; color: white; }
+                .th-strongbuy { background-color: #1e8449; color: white; }
+                .th-buy { background-color: #27ae60; color: white; }
+                .th-neutral { background-color: #f39c12; color: white; }
+                .th-weak { background-color: #e67e22; color: white; }
+                .th-sell { background-color: #c0392b; color: white; }
                 .th-purple { background-color: #8e44ad; color: white; }
                 .th-gray { background-color: #7f8c8d; color: white; }
+                .th-yellow { background-color: #e67e22; color: white; }
                 
-                /* Signal badges */
-                .buy { color: #27ae60; font-weight: bold; }
-                .sell { color: #c0392b; font-weight: bold; }
-                
-                /* Warning/alert boxes */
-                .warning { background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 10px; margin: 10px 0; }
-                .exit-alert { background-color: #f8d7da; border-left: 4px solid #c0392b; padding: 10px; margin: 10px 0; }
-                
-                .guide { background-color: #ecf0f1; padding: 10px; margin: 10px 0; border-radius: 4px; }
+                .alert-box { padding: 10px; margin: 10px 0; border-radius: 5px; }
+                .alert-green { background-color: #d4edda; border-left: 4px solid #27ae60; }
+                .alert-red { background-color: #f8d7da; border-left: 4px solid #c0392b; }
+                .summary-box { background-color: #ecf0f1; padding: 15px; margin: 15px 0; border-radius: 5px; }
             </style>
         </head>
         <body>
         """
         
-        html += f"<h2>📊 Market Scanner Report - {datetime.now().strftime('%Y-%m-%d %H:%M')}</h2>"
+        html += f"<h2>📈 Market Scanner Report - {datetime.now().strftime('%Y-%m-%d %H:%M')}</h2>"
         
-        # DATA QUALITY WARNINGS (if any)
-        if self.data_warnings:
-            html += """
-            <div class='warning'>
-                <strong>⚠️ DATA QUALITY WARNINGS:</strong><br>
-            """
-            for warning in self.data_warnings:
-                html += f"• {warning}<br>"
-            html += "</div>"
+        # Build filter description
+        filter_parts = [f"${self.mc_filter}B+ market cap"]
+        if self.eps_filter:
+            filter_parts.append(f"EPS growth ≥{self.eps_filter}%")
+        if self.rev_filter:
+            filter_parts.append(f"Rev growth ≥{self.rev_filter}%")
+        filter_desc = " | ".join(filter_parts)
         
-        # ==========================================
-        # SECTION 1: TECHNICAL INDICATORS GUIDE (Gray)
-        # ==========================================
-        html += "<div class='section-gray'>📖 TECHNICAL INDICATORS COMPARISON GUIDE</div>"
+        html += f"<p style='color:#7f8c8d; font-size:11px;'>Scanned ~2,500 stocks from S&P 500, NASDAQ 100, Russell 2000, IBD | Filtered: {filter_desc} | {len(self.all_results)} stocks passed</p>"
+        
+        # ZONE GUIDE
         html += """
-        <div class='guide'>
+        <div class='section-gray'>📊 PSAR ZONE & MOMENTUM GUIDE</div>
         <table>
-            <tr>
-                <th class='th-gray'>Indicator</th>
-                <th class='th-gray'>Entry Timing</th>
-                <th class='th-gray'>Accuracy</th>
-                <th class='th-gray'>Best Use Case</th>
-            </tr>
-            <tr><td><strong>RSI</strong></td><td>Early</td><td>Medium</td><td>Oversold bounces</td></tr>
-            <tr><td><strong>Stochastic</strong></td><td>Very Early</td><td>Low</td><td>Day trading</td></tr>
-            <tr><td><strong>MACD ⭐</strong></td><td>Medium</td><td>High</td><td>Trend reversals</td></tr>
-            <tr><td><strong>PSAR</strong></td><td>Late</td><td>Very High</td><td>Confirmed trends</td></tr>
-            <tr><td><strong>Bollinger Bands</strong></td><td>Early</td><td>Medium</td><td>Volatility plays</td></tr>
-            <tr><td><strong>Williams %R</strong></td><td>Very Early</td><td>Low-Medium</td><td>Short-term reversals</td></tr>
-            <tr><td><strong>Coppock Curve</strong></td><td>Very Late</td><td>High</td><td>Major bottoms (long-term)</td></tr>
-            <tr><td><strong>Ultimate Oscillator</strong></td><td>Early-Medium</td><td>High</td><td>Multi-timeframe confirm</td></tr>
+            <tr><th class='th-gray'>Zone</th><th class='th-gray'>PSAR %</th><th class='th-gray'>Criteria</th><th class='th-gray'>Action</th></tr>
+            <tr style='background-color:#c8e6c9;'><td><strong>🟢🟢🟢 STRONG BUY</strong></td><td>> +5%</td><td>+ Momentum≥7 + IR≥40 + Above 50MA + OBV🟢</td><td>Best opportunities</td></tr>
+            <tr style='background-color:#d4edda;'><td><strong>🟢🟢 BUY</strong></td><td>> +5%</td><td>Confirmed uptrend</td><td>Hold / Add on dips</td></tr>
+            <tr style='background-color:#e8f5e9;'><td><strong>🟢 BUY</strong></td><td>+2% to +5%</td><td>Healthy signal</td><td>Hold / Watch</td></tr>
+            <tr style='background-color:#fff8e1;'><td><strong>🟡 NEUTRAL</strong></td><td>-2% to +2%</td><td>Could flip either way</td><td>Watch closely</td></tr>
+            <tr style='background-color:#ffebee;'><td><strong>🟠 WEAK</strong></td><td>-5% to -2%</td><td>Sell but could reverse</td><td>Covered calls / stops</td></tr>
+            <tr style='background-color:#f8d7da;'><td><strong>🔴 SELL</strong></td><td>< -5%</td><td>Confirmed downtrend</td><td>Exit or hedge</td></tr>
         </table>
+        <p style='font-size:10px; color:#7f8c8d;'>
+        <strong>Momentum (1-10):</strong> Trajectory since signal start. 8-10=Strong, 4-7=Neutral, 1-3=Weak<br>
+        <strong>IR (Indicator Rating):</strong> MACD(30) + Ultimate(30) + Williams(20) + Bollinger(10) + Coppock(10) = Max 100<br>
+        <strong>OBV:</strong> 🟢=Volume confirms price | 🟡=Neutral | 🔴=Divergence warning<br>
+        <strong>⭐ = IBD Stock</strong> (Investor's Business Daily growth stock list)
+        </p>
+        """
+        
+        # Categorize stocks into tiers
+        all_strong = [r for r in self.all_results if r.get('psar_zone') == 'STRONG_BUY' and not r.get('is_watchlist')]
+        
+        # TOP TIER: PSAR>5% + Momentum>=7 + IR>=40 + Above 50MA + OBV Confirms
+        top_tier = [r for r in all_strong if 
+                    r.get('psar_momentum', 0) >= 7 and 
+                    r.get('signal_weight', 0) >= 40 and 
+                    r.get('above_ma50', False) and
+                    r.get('obv_status', 'NEUTRAL') == 'CONFIRM']
+        
+        # STRONG BUY: Rest of >5%
+        strong_buy = [r for r in all_strong if r not in top_tier]
+        
+        # BUY: +2% to +5%
+        buy = [r for r in self.all_results if r.get('psar_zone') == 'BUY' and not r.get('is_watchlist')]
+        
+        # Other zones
+        neutral = [r for r in self.all_results if r.get('psar_zone') == 'NEUTRAL' and not r.get('is_watchlist')]
+        weak = [r for r in self.all_results if r.get('psar_zone') == 'WEAK' and not r.get('is_watchlist')]
+        sell = [r for r in self.all_results if r.get('psar_zone') == 'SELL' and not r.get('is_watchlist')]
+        
+        # Sort each by momentum then IR
+        for lst in [top_tier, strong_buy, buy, neutral, weak, sell]:
+            lst.sort(key=lambda x: (-x.get('psar_momentum', 0), -x.get('signal_weight', 0)))
+        
+        # SUMMARY
+        html += f"""
+        <div class='summary-box'>
+            <h3 style='margin-top:0;'>Market Summary</h3>
+            <table style='width:auto;'>
+                <tr><td>🟢🟢🟢 <strong>STRONG BUY (Top Tier):</strong></td><td><strong>{len(top_tier)}</strong></td></tr>
+                <tr><td>🟢🟢 <strong>BUY (Confirmed):</strong></td><td><strong>{len(strong_buy)}</strong></td></tr>
+                <tr><td>🟢 <strong>BUY:</strong></td><td>{len(buy)}</td></tr>
+                <tr><td>🟡 <strong>NEUTRAL:</strong></td><td>{len(neutral)}</td></tr>
+                <tr><td>🟠 <strong>WEAK:</strong></td><td>{len(weak)}</td></tr>
+                <tr><td>🔴 <strong>SELL:</strong></td><td>{len(sell)}</td></tr>
+            </table>
         </div>
         """
         
-        # ==========================================
-        # SECTION 2: RECENT EXITS - Last 7 Days (RED)
-        # ==========================================
-        html += "<div class='section-red'>🚨 RECENT EXITS (Last 7 Days - BUY → SELL)</div>"
-        
+        # EXITS ALERT
         if self.recent_exits:
-            html += f"""
-            <div class='exit-alert'>
-                <strong>⚠️ {len(self.recent_exits)} stocks exited PSAR Buy signal in the last 7 days!</strong>
-            </div>
-            """
-            html += """
-            <table>
-                <tr>
-                    <th class='th-red'>Ticker</th>
-                    <th class='th-red'>Company</th>
-                    <th class='th-red'>Exit Date</th>
-                    <th class='th-red'>Exit Price</th>
-                    <th class='th-red'>PSAR Dist</th>
-                    <th class='th-red'>Indicators at Exit</th>
-                </tr>
-            """
-            
-            for exit_entry in self.recent_exits:
-                try:
-                    exit_date = datetime.fromisoformat(exit_entry['exit_date'])
-                    date_str = exit_date.strftime('%m/%d %H:%M')
-                except:
-                    date_str = "Unknown"
-                
-                indicators_html = self.get_exit_indicator_symbols(exit_entry.get('indicators', {}))
-                
-                html += f"""
-                <tr style='background-color: #fdf2f2;'>
-                    <td><strong style='color:#c0392b;'>{exit_entry['ticker']}</strong></td>
-                    <td>{exit_entry.get('company', '')[:25]}</td>
-                    <td>{date_str}</td>
-                    <td>${exit_entry.get('exit_price', 0):.2f}</td>
-                    <td>{exit_entry.get('psar_distance', 0):.2f}%</td>
-                    <td>{indicators_html}</td>
-                </tr>
-                """
-            
+            html += "<div class='section-red'>🚨 RECENT ZONE EXITS (Last 7 Days)</div>"
+            html += "<table><tr><th class='th-sell'>Ticker</th><th class='th-sell'>Exit Date</th><th class='th-sell'>Now Zone</th><th class='th-sell'>Momentum</th></tr>"
+            for e in self.recent_exits[:15]:
+                date_str = datetime.fromisoformat(e['exit_date']).strftime('%m/%d') if 'exit_date' in e else "?"
+                html += f"<tr><td><strong>{e['ticker']}</strong></td><td>{date_str}</td><td>{self.get_zone_emoji(e.get('psar_zone','?'))} {e.get('psar_zone','?')}</td><td>{self.get_momentum_display(e.get('psar_momentum', 5))}</td></tr>"
             html += "</table>"
-        else:
-            html += "<p style='color:#27ae60;'>✓ No exits in the last 7 days - all previous buys still active!</p>"
         
-        # ==========================================
-        # SECTION 3: NEW PSAR ENTRIES - All Indices (GREEN)
-        # ==========================================
-        html += "<div class='section-green'>🟢 NEW PSAR BUY SIGNALS (All Indices)</div>"
+        # HIGH MOMENTUM IMPROVING
+        improving = [r for r in self.all_results if r.get('psar_zone') in ['SELL', 'WEAK', 'NEUTRAL'] and r.get('psar_momentum', 0) >= 6 and r.get('psar_distance', 0) < 0]
+        if improving:
+            improving.sort(key=lambda x: -x.get('psar_momentum', 0))
+            html += "<div class='alert-box alert-green'>"
+            html += f"<strong>⬆️ {len(improving)} stocks improving rapidly (Momentum ≥6):</strong> "
+            html += ", ".join([f"<strong>{r['ticker']}</strong> ({r['psar_distance']:+.1f}%, M:{r['psar_momentum']})" for r in improving[:10]])
+            if len(improving) > 10:
+                html += f" +{len(improving)-10} more"
+            html += "</div>"
         
-        psar_buys = [r for r in self.all_results if r['psar_bullish']]
-        # Sort by: 1) Grade (A first), 2) Weight (highest), 3) Volume ratio (highest), 4) PSAR distance (lowest/freshest)
-        grade_order = {'A': 0, 'B': 1, 'C': 2}
-        psar_buys = sorted(psar_buys, key=lambda x: (
-            grade_order.get(x.get('entry_grade', 'C'), 2),  # Grade A=0, B=1, C=2
-            -x.get('signal_weight', 0),                      # Weight descending
-            -x.get('volume_ratio', 0),                       # Volume ratio descending
-            x.get('psar_distance', 999)                      # PSAR distance ascending (freshest first)
-        ))
+        # WATCHLIST
+        watchlist = [r for r in self.all_results if r.get('is_watchlist', False)]
+        if watchlist:
+            html += "<div class='section-yellow'>⭐ PERSONAL WATCHLIST</div>"
+            html += self._build_zone_table(watchlist, 'yellow')
         
-        # Identify IBD stocks for highlighting
-        ibd_psar_buys = [r for r in psar_buys if 'IBD' in r.get('source', '')]
+        # TOP TIER STRONG BUY - Show ALL
+        if top_tier:
+            html += f"<div class='section-toptier'>🟢🟢🟢 STRONG BUY - TOP TIER ({len(top_tier)} stocks)</div>"
+            html += "<p style='font-size:10px;color:#666;'>PSAR >+5% + Momentum≥7 + IR≥40 + Above 50MA</p>"
+            html += self._build_zone_table(top_tier, 'toptier')
         
-        if psar_buys:
-            # Show IBD + PSAR combo section first if any exist
-            if ibd_psar_buys:
-                html += f"""
-                <div style='background-color: #fff9e6; border-left: 4px solid #f1c40f; padding: 10px; margin: 10px 0;'>
-                    <strong>⭐ IBD + PSAR COMBOS ({len(ibd_psar_buys)} stocks)</strong> - Quality growth stocks with fresh buy signals:
-                    <span style='font-size: 13px;'><strong>
-                """
-                ibd_tickers = [r['ticker'] for r in ibd_psar_buys[:15]]  # Show first 15
-                html += ", ".join(ibd_tickers)
-                if len(ibd_psar_buys) > 15:
-                    html += f" ... +{len(ibd_psar_buys) - 15} more"
-                html += "</strong></span></div>"
-            
-            html += f"<p><strong>Total PSAR Buy Signals: {len(psar_buys)}</strong></p>"
-            html += """
-            <table>
-                <tr>
-                    <th class='th-green'>Ticker</th>
-                    <th class='th-green'>Company</th>
-                    <th class='th-green'>Grade</th>
-                    <th class='th-green'>Days</th>
-                    <th class='th-green'>Price</th>
-                    <th class='th-green'>PSAR %</th>
-                    <th class='th-green'>Off High</th>
-                    <th class='th-green'>50MA</th>
-                    <th class='th-green'>Vol</th>
-                    <th class='th-green'>Wt</th>
-                    <th class='th-green'>RSI</th>
-                    <th class='th-green'>Indicators</th>
-                </tr>
-            """
-            
-            for r in psar_buys:
-                # Entry grade styling
-                grade = r.get('entry_grade', 'C')
-                if grade == 'A':
-                    grade_html = "<span style='color:#27ae60; font-weight:bold;'>A</span>"
-                elif grade == 'B':
-                    grade_html = "<span style='color:#f39c12; font-weight:bold;'>B</span>"
-                else:
-                    grade_html = "<span style='color:#95a5a6;'>C</span>"
-                
-                # Days since signal
-                days = r.get('days_since_signal', 0)
-                if days <= 5:
-                    days_html = f"<span style='color:#27ae60; font-weight:bold;'>{days}d</span>"
-                elif days <= 15:
-                    days_html = f"<span style='color:#f39c12;'>{days}d</span>"
-                else:
-                    days_html = f"<span style='color:#95a5a6;'>{days}d</span>"
-                
-                # % off 52w high
-                off_high = r.get('pct_off_high', 0)
-                if off_high <= 10:
-                    off_high_html = f"<span style='color:#e74c3c;'>-{off_high:.0f}%</span>"  # Near highs
-                elif off_high <= 25:
-                    off_high_html = f"<span style='color:#f39c12;'>-{off_high:.0f}%</span>"
-                else:
-                    off_high_html = f"<span style='color:#27ae60;'>-{off_high:.0f}%</span>"  # Good pullback
-                
-                # Above/below 50MA
-                above_ma = r.get('above_ma50', False)
-                ma_html = "<span style='color:#27ae60;'>↑</span>" if above_ma else "<span style='color:#e74c3c;'>↓</span>"
-                
-                # Volume ratio
-                vol_ratio = r.get('volume_ratio', 1.0)
-                if vol_ratio >= 1.5:
-                    vol_html = f"<span style='color:#27ae60; font-weight:bold;'>{vol_ratio:.1f}x</span>"
-                elif vol_ratio >= 1.0:
-                    vol_html = f"{vol_ratio:.1f}x"
-                else:
-                    vol_html = f"<span style='color:#95a5a6;'>{vol_ratio:.1f}x</span>"
-                
-                # IBD star marker
-                is_ibd = 'IBD' in r.get('source', '')
-                ticker_display = f"⭐{r['ticker']}" if is_ibd else r['ticker']
-                
-                # Row highlighting for Grade A
-                row_style = "background-color: #e8f5e9;" if grade == 'A' else ""
-                
-                html += f"""
-                <tr style='{row_style}'>
-                    <td><strong>{ticker_display}</strong></td>
-                    <td>{r['company'][:20]}</td>
-                    <td>{grade_html}</td>
-                    <td>{days_html}</td>
-                    <td>${r['price']:.2f}</td>
-                    <td>{r['psar_distance']:.1f}%</td>
-                    <td>{off_high_html}</td>
-                    <td>{ma_html}</td>
-                    <td>{vol_html}</td>
-                    <td>{r['signal_weight']}</td>
-                    <td>{r['rsi']:.0f}</td>
-                    <td>{self.get_indicator_symbols(r)}</td>
-                </tr>
-                """
-            
-            html += "</table>"
-            html += """
-            <p style='font-size: 10px; color: #7f8c8d;'>
-            <strong>Grade:</strong> A=Fresh (≤7d) + weight≥50 or RSI<40 | B=≤20 days + weight≥20 | C=Older/weaker<br>
-            <strong>Days:</strong> Days since PSAR flipped to buy | <strong>Off High:</strong> % below 52-week high | <strong>50MA:</strong> ↑=Above, ↓=Below | <strong>Vol:</strong> Today vs 20-day avg
-            </p>
-            """
-        else:
-            html += "<p>No PSAR buy signals found</p>"
+        # STRONG BUY (Confirmed) - Show ALL
+        if strong_buy:
+            html += f"<div class='section-strongbuy'>🟢🟢 BUY - CONFIRMED ({len(strong_buy)} stocks)</div>"
+            html += "<p style='font-size:10px;color:#666;'>PSAR >+5% but missing some Top Tier criteria</p>"
+            html += self._build_zone_table(strong_buy, 'strongbuy')
         
-        # ==========================================
-        # SECTION 4: PERSONAL WATCHLIST (YELLOW/Gold) - NO DIVIDENDS
-        # ==========================================
-        html += "<div class='section-yellow'>⭐ PERSONAL WATCHLIST (All Indicators Displayed)</div>"
+        # BUY - Show ALL
+        if buy:
+            html += f"<div class='section-buy'>🟢 BUY ({len(buy)} stocks)</div>"
+            html += self._build_zone_table(buy, 'buy')
         
-        if self.watchlist_results:
-            html += """
-            <table>
-                <tr>
-                    <th class='th-yellow'>Ticker</th>
-                    <th class='th-yellow'>Company</th>
-                    <th class='th-yellow'>Signal</th>
-                    <th class='th-yellow'>Price</th>
-                    <th class='th-yellow'>Day %</th>
-                    <th class='th-yellow'>PSAR Dist</th>
-                    <th class='th-yellow'>Weight</th>
-                    <th class='th-yellow'>RSI</th>
-                    <th class='th-yellow'>All Indicators</th>
-                </tr>
-            """
-            
-            for r in self.watchlist_results:
-                signal_class = "buy" if r['psar_bullish'] else "sell"
-                signal_text = "BUY" if r['psar_bullish'] else "SELL"
-                day_color = "#27ae60" if r['day_change'] > 0 else "#c0392b"
-                
-                # Color code PSAR distance - green for positive (buy), red for negative (sell)
-                psar_dist = r['psar_distance']
-                if psar_dist >= 0:
-                    psar_color = "#27ae60"
-                    psar_display = f"+{psar_dist:.2f}%"
-                else:
-                    psar_color = "#c0392b"
-                    psar_display = f"{psar_dist:.2f}%"
-                
-                html += f"""
-                <tr>
-                    <td><strong>{r['ticker']}</strong></td>
-                    <td>{r['company'][:25]}</td>
-                    <td class='{signal_class}'>{signal_text}</td>
-                    <td>${r['price']:.2f}</td>
-                    <td style='color: {day_color};'>{r['day_change']:+.2f}%</td>
-                    <td style='color: {psar_color};'>{psar_display}</td>
-                    <td>{r['signal_weight']}</td>
-                    <td>{r['rsi']:.1f}</td>
-                    <td>{self.get_indicator_symbols(r)}</td>
-                </tr>
-                """
-            
-            html += "</table>"
-        else:
-            html += "<p>No watchlist data available</p>"
+        # NEUTRAL/WEAK/SELL - Just show counts in summary, no tables
+        # (Users can see these in -mystocks mode for their portfolio)
         
-        # ==========================================
-        # SECTION 5: TOP 50 BUYS (BLUE) - NO DIVIDENDS
-        # ==========================================
-        html += "<div class='section-blue'>🏆 TOP 50 BUY SIGNALS (Sorted by PSAR Distance & Weight)</div>"
-        
-        top_buys = [r for r in self.all_results if r['psar_bullish'] and not r.get('is_watchlist', False)]
-        # Sort by HIGHEST distance first, then HIGHEST weight as tiebreaker
-        top_buys = sorted(top_buys, key=lambda x: (-x.get('psar_distance', 0), -x.get('signal_weight', 0)))[:50]
-        
-        if top_buys:
-            html += """
-            <table>
-                <tr>
-                    <th class='th-blue'>#</th>
-                    <th class='th-blue'>Ticker</th>
-                    <th class='th-blue'>Company</th>
-                    <th class='th-blue'>Source</th>
-                    <th class='th-blue'>Price</th>
-                    <th class='th-blue'>PSAR Dist</th>
-                    <th class='th-blue'>Weight</th>
-                    <th class='th-blue'>RSI</th>
-                    <th class='th-blue'>Indicators</th>
-                    <th class='th-blue'>IBD</th>
-                </tr>
-            """
-            
-            for idx, r in enumerate(top_buys, 1):
-                ibd_text = f"{r['composite']}/{r['eps']}/{r['rs']}" if r['composite'] != 'N/A' else "-"
-                
-                html += f"""
-                <tr>
-                    <td>{idx}</td>
-                    <td><strong>{r['ticker']}</strong></td>
-                    <td>{r['company'][:25]}</td>
-                    <td>{r['source']}</td>
-                    <td>${r['price']:.2f}</td>
-                    <td>{r['psar_distance']:.2f}%</td>
-                    <td><strong>{r['signal_weight']}</strong></td>
-                    <td>{r['rsi']:.1f}</td>
-                    <td>{self.get_indicator_symbols(r)}</td>
-                    <td>{ibd_text}</td>
-                </tr>
-                """
-            
-            html += "</table>"
-            html += """
-            <p style='font-size: 10px; color: #7f8c8d;'>
-            <strong>Weight:</strong> Sum of indicator signals: MACD (+30), Ultimate Osc (+30), Williams %R (+20), Bollinger Band (+10), Coppock (+10). Max=100<br>
-            <strong>IBD Column:</strong> Composite/EPS/RS ratings (1-99 scale). <em>Composite</em>=Overall IBD rating, <em>EPS</em>=Earnings strength, <em>RS</em>=Relative Strength vs market. Higher is better, 80+ is strong.
-            </p>
-            """
-        else:
-            html += "<p>No buy signals found</p>"
-        
-        # ==========================================
-        # SECTION 6: DIVIDEND STOCKS (PURPLE) - PSAR BUY first, then high weight
-        # Excludes REITs and Limited Partnerships
-        # ==========================================
-        html += "<div class='section-purple'>💰 DIVIDEND STOCKS (Yield 1.5-15%, No REITs/LPs, Max 50)</div>"
-        
-        # Get dividend stocks with yield between 1.5% and 15% (filter out bad data)
-        # Exclude REITs and Limited Partnerships
+        # DIVIDEND STOCKS
         div_stocks = [r for r in self.all_results 
-                      if 1.5 <= r['dividend_yield'] <= 15.0 
+                      if 1.5 <= r.get('dividend_yield', 0) <= 15.0 
                       and not r.get('is_watchlist', False)
                       and not r.get('is_reit', False)
                       and not r.get('is_lp', False)]
         
-        # PSAR buys first, sorted by PSAR distance (freshest signals first)
-        psar_div_buys = [r for r in div_stocks if r['psar_bullish']]
-        psar_div_buys = sorted(psar_div_buys, key=lambda x: (x.get('psar_distance', 999), -x.get('signal_weight', 0)))
+        zone_priority = {'STRONG_BUY': 0, 'BUY': 1, 'NEUTRAL': 2, 'WEAK': 3, 'SELL': 4}
+        div_stocks.sort(key=lambda x: (zone_priority.get(x.get('psar_zone', 'SELL'), 5), -x.get('dividend_yield', 0)))
         
-        # Non-PSAR with high weight stocks next (weight >= 40), sorted by weight then distance
-        high_weight_div = [r for r in div_stocks if not r['psar_bullish'] and r['signal_weight'] >= 40]
-        high_weight_div = sorted(high_weight_div, key=lambda x: (-x['signal_weight'], x.get('psar_distance', 999)))
-        
-        # Combine up to 50 total
-        dividend_list = (psar_div_buys + high_weight_div)[:50]
-        
-        if dividend_list:
-            psar_count = len(psar_div_buys)
-            html += f"<p><strong>Showing {len(dividend_list)} dividend stocks ({psar_count} with PSAR BUY signal) - REITs/LPs excluded</strong></p>"
-            html += """
-            <table>
-                <tr>
-                    <th class='th-purple'>Ticker</th>
-                    <th class='th-purple'>Company</th>
-                    <th class='th-purple'>PSAR Signal</th>
-                    <th class='th-purple'>Price</th>
-                    <th class='th-purple'>PSAR Dist</th>
-                    <th class='th-purple'>Weight</th>
-                    <th class='th-purple'>Div Yield</th>
-                    <th class='th-purple'>Indicators</th>
-                </tr>
-            """
+        if div_stocks:
+            div_in_buy = len([d for d in div_stocks if d.get('psar_zone') in ['STRONG_BUY', 'BUY']])
+            html += f"<div class='section-purple'>💰 DIVIDEND STOCKS ({len(div_stocks)} total, {div_in_buy} in BUY zones, showing top 30)</div>"
+            html += """<table><tr>
+                <th class='th-purple'>Ticker</th><th class='th-purple'>Company</th><th class='th-purple'>Zone</th>
+                <th class='th-purple'>Mom</th><th class='th-purple'>Price</th><th class='th-purple'>PSAR %</th>
+                <th class='th-purple'>Yield</th><th class='th-purple'>IR</th></tr>"""
             
-            for r in dividend_list:
-                if r['psar_bullish']:
-                    signal_html = "<span style='color:#27ae60; font-weight:bold;'>🟢 BUY</span>"
-                    row_style = "background-color: #e8f5e9;"
-                else:
-                    signal_html = "<span style='color:#7f8c8d;'>⚪ SELL</span>"
-                    row_style = ""
-                
-                html += f"""
-                <tr style='{row_style}'>
-                    <td><strong>{r['ticker']}</strong></td>
-                    <td>{r['company'][:25]}</td>
-                    <td>{signal_html}</td>
-                    <td>${r['price']:.2f}</td>
-                    <td>{r['psar_distance']:.2f}%</td>
-                    <td>{r['signal_weight']}</td>
-                    <td>{r['dividend_yield']:.2f}%</td>
-                    <td>{self.get_indicator_symbols(r)}</td>
-                </tr>
-                """
-            
+            for r in div_stocks[:30]:
+                zone = r.get('psar_zone', 'UNKNOWN')
+                is_ibd = 'IBD' in r.get('source', '')
+                ticker_display = f"⭐{r['ticker']}" if is_ibd else r['ticker']
+                html += f"""<tr>
+                    <td><strong>{ticker_display}</strong></td><td>{r.get('company', r['ticker'])[:18]}</td>
+                    <td style='color:{self.get_zone_color(zone)};'>{self.get_zone_emoji(zone)}</td>
+                    <td>{self.get_momentum_display(r.get('psar_momentum', 5))}</td>
+                    <td>${r['price']:.2f}</td><td style='color:{self.get_zone_color(zone)};'>{r['psar_distance']:+.1f}%</td>
+                    <td><strong>{r['dividend_yield']:.1f}%</strong></td><td>{r['signal_weight']}</td></tr>"""
             html += "</table>"
-        else:
-            html += "<p>No dividend stocks meeting criteria found</p>"
         
+        # FOOTER
         html += """
         <hr>
         <p style='font-size: 10px; color: #7f8c8d;'>
-        Generated by Market PSAR Scanner | Data: Yahoo Finance | Exit tracking: 7-day rolling window
+        <strong>IR (Indicator Rating):</strong> MACD(30) + Ultimate(30) + Williams %R(20) + Bollinger(10) + Coppock(10) = Max 100<br>
+        <strong>Momentum (1-10):</strong> Trajectory since signal start. 8-10=Strong, 4-7=Neutral, 1-3=Weak<br>
+        <strong>⭐ = IBD Stock</strong> (Investor's Business Daily growth stock list)<br>
+        Generated by PSAR Zone Scanner
         </p>
-        </body>
-        </html>
+        </body></html>
         """
         
         return html
     
-    def send_email(self):
-        """Send email report"""
+    def _build_zone_table(self, stocks, zone_class):
+        th_class = f'th-{zone_class}'
+        
+        html = f"""<table><tr>
+            <th class='{th_class}'>Ticker</th><th class='{th_class}'>Company</th><th class='{th_class}'>Zone</th>
+            <th class='{th_class}'>Mom</th><th class='{th_class}'>Price</th><th class='{th_class}'>PSAR %</th>
+            <th class='{th_class}'>OBV</th><th class='{th_class}'>IR</th><th class='{th_class}'>RSI</th><th class='{th_class}'>50MA</th>
+            <th class='{th_class}'>Indicators</th></tr>"""
+        
+        for r in stocks:
+            zone = r.get('psar_zone', 'UNKNOWN')
+            zone_color = self.get_zone_color(zone)
+            momentum = r.get('psar_momentum', 5)
+            
+            above_ma = r.get('above_ma50', False)
+            ma_html = "<span style='color:#27ae60;'>↑</span>" if above_ma else "<span style='color:#e74c3c;'>↓</span>"
+            
+            obv_html = self.get_obv_display(r.get('obv_status', 'NEUTRAL'))
+            
+            is_ibd = 'IBD' in r.get('source', '')
+            ticker_display = f"⭐{r['ticker']}" if is_ibd else r['ticker']
+            
+            html += f"""<tr>
+                <td><strong>{ticker_display}</strong></td><td>{r.get('company', r['ticker'])[:16]}</td>
+                <td style='color:{zone_color};'>{self.get_zone_emoji(zone)}</td>
+                <td>{self.get_momentum_display(momentum)}</td>
+                <td>${r['price']:.2f}</td>
+                <td style='color:{zone_color}; font-weight:bold;'>{r['psar_distance']:+.1f}%</td>
+                <td>{obv_html}</td>
+                <td>{r['signal_weight']}</td><td>{r['rsi']:.0f}</td><td>{ma_html}</td>
+                <td style='font-size:10px;'>{self.get_indicator_symbols(r)}</td></tr>"""
+        
+        html += "</table>"
+        return html
+    
+    def send_email(self, additional_email=None):
         sender_email = os.getenv("GMAIL_EMAIL")
         sender_password = os.getenv("GMAIL_PASSWORD")
         recipient_email = os.getenv("RECIPIENT_EMAIL")
         
         if not all([sender_email, sender_password, recipient_email]):
-            print("✗ Missing email credentials in environment variables")
-            print(f"  GMAIL_EMAIL: {'✓' if sender_email else '✗'}")
-            print(f"  GMAIL_PASSWORD: {'✓' if sender_password else '✗'}")
-            print(f"  RECIPIENT_EMAIL: {'✓' if recipient_email else '✗'}")
+            print("✗ Missing email credentials")
             return
         
-        msg = MIMEMultipart('alternative')
-        msg['Subject'] = f"📊 Market Scanner - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-        msg['From'] = sender_email
-        msg['To'] = recipient_email
+        # Count tiers for subject
+        all_strong = [r for r in self.all_results if r.get('psar_zone') == 'STRONG_BUY']
+        top_tier = len([r for r in all_strong if 
+                    r.get('psar_momentum', 0) >= 7 and 
+                    r.get('signal_weight', 0) >= 40 and 
+                    r.get('above_ma50', False) and
+                    r.get('obv_status', 'NEUTRAL') == 'CONFIRM'])
+        strong_buy = len(all_strong) - top_tier
+        buy = len([r for r in self.all_results if r.get('psar_zone') == 'BUY'])
         
-        html_body = self.build_email_body()
-        msg.attach(MIMEText(html_body, 'html'))
+        msg = MIMEMultipart('alternative')
+        msg['Subject'] = f"📈 Market: {top_tier} Top Tier, {strong_buy} Strong, {buy} Buy - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        msg['From'] = sender_email
+        
+        # Build recipient list
+        recipients = [recipient_email]
+        if additional_email:
+            recipients.append(additional_email)
+        msg['To'] = ", ".join(recipients)
+        
+        msg.attach(MIMEText(self.build_email_body(), 'html'))
         
         try:
             with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
                 server.login(sender_email, sender_password)
                 server.send_message(msg)
-            
-            print(f"\n✓ Email sent successfully to {recipient_email}")
+            print(f"\n✓ Email sent to: {', '.join(recipients)}")
+            print(f"  Top Tier: {top_tier}, Strong Buy: {strong_buy}, Buy: {buy}")
         except Exception as e:
             print(f"\n✗ Failed to send email: {e}")
