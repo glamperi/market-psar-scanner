@@ -312,6 +312,23 @@ class PortfolioReport:
                         html += f"<tr><td><strong>{r['ticker']}</strong></td><td>{self.format_value(r['position_value'])}</td><td style='color:{self.get_zone_color(zone)};'>{self.get_zone_emoji(zone)}</td><td>${r['price']:.2f}</td><td colspan='4' style='color:#999;'>No options</td></tr>"
                 html += "</table>"
         
+        # COVERED CALLS FOR FRIENDS MODE
+        if self.is_friends_mode:
+            cc_candidates = [r for r in self.all_results if r.get('psar_zone') in ['NEUTRAL', 'WEAK', 'SELL']]
+            if cc_candidates:
+                html += "<div class='section-blue'>📞 POTENTIAL COVERED CALL OPPORTUNITIES</div>"
+                html += "<p style='font-size:11px;color:#666;margin:5px 0;'>Stocks in NEUTRAL/WEAK/SELL zones - consider writing covered calls to generate income while waiting</p>"
+                html += "<table><tr><th class='th-blue'>Ticker</th><th class='th-blue'>Zone</th><th class='th-blue'>Price</th><th class='th-blue'>PSAR%</th><th class='th-blue'>Exp</th><th class='th-blue'>Strike</th><th class='th-blue'>Upside</th><th class='th-blue'>Ann.Yield</th></tr>"
+                
+                for r in cc_candidates[:20]:
+                    cc = self.get_covered_call_recommendation(r['ticker'], r['price'])
+                    zone = r.get('psar_zone', 'UNKNOWN')
+                    if cc:
+                        html += f"<tr><td><strong>{r['ticker']}</strong></td><td style='color:{self.get_zone_color(zone)};'>{self.get_zone_emoji(zone)}</td><td>${r['price']:.2f}</td><td>{r['psar_distance']:+.1f}%</td><td>{cc['expiration']} ({cc['dte']}d)</td><td>${cc['strike']:.2f}</td><td>+{cc['upside_to_strike']:.1f}%</td><td><strong>{cc['annualized_yield']:.0f}%</strong></td></tr>"
+                    else:
+                        html += f"<tr><td><strong>{r['ticker']}</strong></td><td style='color:{self.get_zone_color(zone)};'>{self.get_zone_emoji(zone)}</td><td>${r['price']:.2f}</td><td>{r['psar_distance']:+.1f}%</td><td colspan='4' style='color:#999;'>No options available</td></tr>"
+                html += "</table>"
+        
         # ALL POSITIONS BY ZONE
         html += "<div class='section-gray'>📋 ALL POSITIONS BY ZONE</div>"
         

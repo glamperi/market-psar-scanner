@@ -423,6 +423,31 @@ python market_scanner.py -shortscan -mc 1 -adr
 - Below 50-day MA
 - Low momentum (trend still weakening)
 
+**OTC Stock Short Interest:**
+
+For OTC stocks (like MTPLF, TSWCF), yfinance often doesn't have short interest data. The scanner uses multiple fallback sources:
+
+1. **short_interest.csv** (manual override - most reliable)
+2. **FINRA API** (automatic fallback for OTC stocks)
+3. **yfinance** (works for most exchange-listed stocks)
+
+**Manual Override (Recommended for OTC):**
+
+Create a `short_interest.csv` file with your own data:
+
+```csv
+Symbol,ShortPercent,DaysToCover
+MTPLF,5.2,3.21
+TSWCF,2.5,1.8
+```
+
+Get short interest data from:
+- [Benzinga](https://www.benzinga.com/quote/MTPLF/short-interest)
+- [Fintel](https://fintel.io/ss/us/mtplf)
+- [OTC Markets](https://www.otcmarkets.com/stock/MTPLF/security)
+
+Note: Short interest is published twice monthly, so data may be up to 2 weeks old.
+
 ---
 
 ## File Formats
@@ -453,6 +478,23 @@ MSFT,22115.83
 ```
 
 Used to show position sizes in portfolio reports and identify concentrated positions (>$10K).
+
+### short_interest.csv
+
+Manual override for short interest data (useful for OTC stocks):
+```csv
+Symbol,ShortPercent,DaysToCover
+MTPLF,5.2,3.21
+TSWCF,2.5,1.8
+BYND,25.3,4.5
+```
+
+Fields:
+- **Symbol**: Ticker symbol
+- **ShortPercent**: Short interest as % of float (e.g., 5.2 = 5.2%)
+- **DaysToCover**: Days to cover (short ratio)
+
+This file takes priority over yfinance and FINRA data.
 
 ### sp500_tickers.csv
 

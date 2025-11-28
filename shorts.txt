@@ -4,8 +4,52 @@
 # Crypto miners (if bearish on BTC)
 IREN
 CIFR
+CORZ
+MARA
+CRWV
 
 # Meme/speculative
 BYND
 
-# Add more tickers below as needed
+# BTC Treasuries
+MSTR
+MTPLF
+NAKA
+ASST
+CEP 
+HOGPF
+SMLR
+BMNR
+FLD
+TSWCF
+
+# Nuclear
+SMR
+OKLO
+
+# Quantum
+RGTI
+IONQ
+QBTS
+QUBT
+
+# MEME Stocks
+GME
+BYND
+AMC
+KSS
+DNUT
+RKLB
+OPEN
+BETR
+LUNR
+RIVN
+SOUN
+SPCE
+DJT
+ASTS
+HOOD
+NBIS
+FNMA
+KRKNF
+ 

@@ -8,10 +8,70 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import os
+import requests
 from ta.trend import MACD, PSARIndicator
 from ta.volatility import BollingerBands
 from ta.momentum import WilliamsRIndicator, UltimateOscillator, RSIIndicator
 from ta.trend import CCIIndicator
+
+# Cache for FINRA short interest data (to avoid repeated API calls)
+_finra_short_cache = {}
+
+def get_finra_short_interest(ticker):
+    """
+    Fetch short interest data from FINRA for OTC stocks.
+    Returns (short_shares, avg_daily_volume, days_to_cover) or (None, None, None) if not found.
+    
+    Note: FINRA publishes short interest twice monthly, so data may be up to 2 weeks old.
+    """
+    global _finra_short_cache
+    
+    # Check cache first
+    if ticker in _finra_short_cache:
+        return _finra_short_cache[ticker]
+    
+    try:
+        url = "https://api.finra.org/data/group/otcMarket/name/EquityShortInterest"
+        
+        payload = {
+            "compareFilters": [
+                {
+                    "compareType": "EQUAL",
+                    "fieldName": "issueSymbolIdentifier", 
+                    "fieldValue": ticker
+                }
+            ],
+            "limit": 1,
+            "sortFields": ["-settlementDate"]  # Get most recent
+        }
+        
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
+        
+        response = requests.post(url, json=payload, headers=headers, timeout=5)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data and len(data) > 0:
+                record = data[0]
+                short_shares = record.get('currentShortPositionQuantity', 0)
+                avg_volume = record.get('averageDailyVolumeQuantity', 0)
+                days_to_cover = record.get('daysToCoverQuantity', 0)
+                
+                result = (short_shares, avg_volume, days_to_cover)
+                _finra_short_cache[ticker] = result
+                return result
+        
+        # Not found or error
+        _finra_short_cache[ticker] = (None, None, None)
+        return (None, None, None)
+        
+    except Exception as e:
+        _finra_short_cache[ticker] = (None, None, None)
+        return (None, None, None)
+
 
 class MarketScanner:
     def __init__(self, min_market_cap_billions=10):
@@ -21,6 +81,42 @@ class MarketScanner:
         self.min_market_cap = min_market_cap_billions * 1_000_000_000  # Convert to dollars
         self.min_market_cap_billions = min_market_cap_billions
         self.filter_reasons = {}  # Track why stocks are filtered
+        self.short_interest_overrides = self.load_short_interest_csv()
+    
+    def load_short_interest_csv(self):
+        """Load manual short interest overrides from short_interest.csv
+        
+        CSV format:
+        Symbol,ShortPercent,DaysToCover
+        MTPLF,5.2,3.21
+        TSWCF,2.1,1.5
+        """
+        overrides = {}
+        csv_file = 'short_interest.csv'
+        
+        if os.path.exists(csv_file):
+            try:
+                import csv
+                with open(csv_file, 'r', encoding='utf-8-sig') as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        symbol = row.get('Symbol', '').strip().upper()
+                        if symbol:
+                            try:
+                                short_pct = float(row.get('ShortPercent', 0)) if row.get('ShortPercent') else None
+                                days = float(row.get('DaysToCover', 0)) if row.get('DaysToCover') else None
+                                overrides[symbol] = {
+                                    'short_percent': short_pct,
+                                    'days_to_cover': days
+                                }
+                            except ValueError:
+                                pass
+                if overrides:
+                    print(f"✓ Loaded {len(overrides)} short interest overrides from {csv_file}")
+            except Exception as e:
+                print(f"⚠️ Error loading {csv_file}: {e}")
+        
+        return overrides
         
     def load_custom_watchlist(self):
         """Load priority watchlist from custom_watchlist.txt"""
@@ -648,10 +744,46 @@ class MarketScanner:
                     rev_growth_pct = None
                 
                 # Short interest data for short candidates
-                short_percent = info.get('shortPercentOfFloat')  # As decimal, e.g., 0.15 = 15%
-                if short_percent is not None:
-                    short_percent = short_percent * 100  # Convert to percentage
-                short_ratio = info.get('shortRatio')  # Days to cover
+                # Priority: 1) CSV override, 2) yfinance, 3) FINRA (for OTC)
+                
+                # Check CSV override first
+                if original_ticker in self.short_interest_overrides:
+                    override = self.short_interest_overrides[original_ticker]
+                    short_percent = override.get('short_percent')
+                    short_ratio = override.get('days_to_cover')
+                else:
+                    # Try yfinance
+                    short_percent = info.get('shortPercentOfFloat')  # As decimal, e.g., 0.15 = 15%
+                    if short_percent is not None:
+                        short_percent = short_percent * 100  # Convert to percentage
+                    short_ratio = info.get('shortRatio')  # Days to cover
+                    
+                    # Fallback to FINRA for OTC stocks if yfinance doesn't have short data
+                    # OTC stocks typically end in F or are 5 letters
+                    is_likely_otc = (
+                        len(original_ticker) == 5 or 
+                        original_ticker.endswith('F') or
+                        'OTC' in (info.get('exchange', '') or '').upper() or
+                        info.get('quoteType') == 'EQUITY' and info.get('exchange') in ['PNK', 'OTC', 'NCM']
+                    )
+                    
+                    if short_percent is None and is_likely_otc:
+                        # Try FINRA API for OTC short interest
+                        finra_shorts, finra_volume, finra_days = get_finra_short_interest(original_ticker)
+                        if finra_shorts is not None and finra_shorts > 0:
+                            # Try to calculate short % using shares outstanding from yfinance
+                            shares_outstanding = info.get('sharesOutstanding')
+                            float_shares = info.get('floatShares')
+                            
+                            if float_shares and float_shares > 0:
+                                short_percent = (finra_shorts / float_shares) * 100
+                            elif shares_outstanding and shares_outstanding > 0:
+                                # Use shares outstanding as approximation
+                                short_percent = (finra_shorts / shares_outstanding) * 100
+                            
+                            # Use FINRA's days to cover if available
+                            if finra_days and finra_days > 0:
+                                short_ratio = finra_days
                 
             except Exception as e:
                 self.filter_reasons['info_error'] = self.filter_reasons.get('info_error', 0) + 1
