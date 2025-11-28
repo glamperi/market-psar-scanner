@@ -1,13 +1,15 @@
 """
 Shorts Report Generator
 Analyzes potential short candidates with squeeze risk warnings
+Includes deep ITM put recommendations for bearish positions
 """
 
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
+import yfinance as yf
 
 class ShortsReport:
     def __init__(self, scan_results, mc_filter=None, include_adr=False):
@@ -16,6 +18,152 @@ class ShortsReport:
         self.mc_filter = mc_filter
         self.include_adr = include_adr
         self.is_market_scan = mc_filter is not None  # True if -shortscan, False if -shorts
+    
+    def get_put_recommendation(self, ticker, current_price, psar_distance):
+        """
+        Get deep ITM put recommendation for bearish position.
+        
+        Strategy:
+        - Buy deep ITM put (delta > 0.97) = minimal time premium, moves ~1:1 with stock
+        - To get delta 0.97+, need to be ~30-40% ITM
+        - Optionally sell OTM put at support level to reduce cost (put debit spread)
+        
+        Expiration: 30-45 days typically best for SELL signals
+        """
+        try:
+            stock = yf.Ticker(ticker)
+            expirations = stock.options
+            if not expirations:
+                return None
+            
+            today = datetime.now()
+            best_exp = None
+            
+            # Look for 30-45 day expiration (optimal for SELL signal duration)
+            for exp_str in expirations:
+                dte = (datetime.strptime(exp_str, '%Y-%m-%d') - today).days
+                if 28 <= dte <= 50:
+                    best_exp = exp_str
+                    break
+            
+            # Fallback to anything 21+ days
+            if not best_exp:
+                for exp_str in expirations:
+                    dte = (datetime.strptime(exp_str, '%Y-%m-%d') - today).days
+                    if dte >= 21:
+                        best_exp = exp_str
+                        break
+            
+            if not best_exp:
+                return None
+            
+            puts = stock.option_chain(best_exp).puts
+            if puts.empty:
+                return None
+            
+            dte = (datetime.strptime(best_exp, '%Y-%m-%d') - today).days
+            
+            # Find deep ITM put (delta > 0.97)
+            # Delta 0.97+ requires ~30-40% ITM
+            target_strike_min = current_price * 1.30  # At least 30% ITM for high delta
+            target_strike_max = current_price * 1.50  # Up to 50% ITM
+            
+            itm_puts = puts[puts['strike'] >= target_strike_min]
+            
+            if itm_puts.empty:
+                # Try less deep ITM (25%+)
+                itm_puts = puts[puts['strike'] >= current_price * 1.25]
+            
+            if itm_puts.empty:
+                # Fallback to any ITM
+                itm_puts = puts[puts['strike'] > current_price]
+                if itm_puts.empty:
+                    return None
+            
+            # Get the put in our target range, or closest available
+            deep_itm = itm_puts[itm_puts['strike'] <= target_strike_max]
+            if deep_itm.empty:
+                deep_itm = itm_puts.head(3)  # Take deepest available
+            
+            # Select put with best liquidity (highest open interest or volume)
+            if 'openInterest' in deep_itm.columns and deep_itm['openInterest'].sum() > 0:
+                best_put = deep_itm.loc[deep_itm['openInterest'].fillna(0).idxmax()]
+            elif 'volume' in deep_itm.columns and deep_itm['volume'].sum() > 0:
+                best_put = deep_itm.loc[deep_itm['volume'].fillna(0).idxmax()]
+            else:
+                best_put = deep_itm.iloc[0]
+            
+            long_strike = best_put['strike']
+            long_bid = best_put['bid'] if best_put['bid'] > 0 else best_put['lastPrice']
+            long_ask = best_put['ask'] if best_put['ask'] > 0 else best_put['lastPrice']
+            long_mid = (long_bid + long_ask) / 2 if long_bid > 0 else long_ask
+            
+            # Calculate intrinsic vs extrinsic value
+            intrinsic = max(0, long_strike - current_price)
+            extrinsic = max(0, long_mid - intrinsic)
+            extrinsic_pct = (extrinsic / long_mid) * 100 if long_mid > 0 else 0
+            
+            # ITM percentage
+            itm_pct = ((long_strike - current_price) / current_price) * 100
+            
+            # Estimate delta based on ITM%
+            # Rough: 30% ITM ≈ 0.95 delta, 40% ITM ≈ 0.97, 50%+ ≈ 0.99
+            if itm_pct >= 50:
+                est_delta = 0.99
+            elif itm_pct >= 40:
+                est_delta = 0.97
+            elif itm_pct >= 30:
+                est_delta = 0.95
+            elif itm_pct >= 20:
+                est_delta = 0.90
+            else:
+                est_delta = 0.80
+            
+            result = {
+                'expiration': best_exp,
+                'dte': dte,
+                'long_strike': long_strike,
+                'long_mid': long_mid,
+                'long_bid': long_bid,
+                'long_ask': long_ask,
+                'intrinsic': intrinsic,
+                'extrinsic': extrinsic,
+                'extrinsic_pct': extrinsic_pct,
+                'itm_pct': itm_pct,
+                'est_delta': est_delta,
+            }
+            
+            # Find potential short put for spread (at support / safe level)
+            # Use 20-25% below current price for more cushion
+            short_target = current_price * 0.75  # 25% below current
+            short_min = current_price * 0.70     # Don't go below 30% OTM
+            
+            otm_puts = puts[(puts['strike'] < current_price * 0.85) & 
+                           (puts['strike'] >= short_min)]
+            
+            if not otm_puts.empty:
+                # Find put closest to our target (25% below)
+                otm_puts = otm_puts.copy()
+                otm_puts['dist_to_target'] = abs(otm_puts['strike'] - short_target)
+                short_put = otm_puts.loc[otm_puts['dist_to_target'].idxmin()]
+                
+                short_strike = short_put['strike']
+                short_bid = short_put['bid'] if short_put['bid'] > 0 else 0
+                short_mid = (short_put['bid'] + short_put['ask']) / 2 if short_put['bid'] > 0 else short_put['ask'] / 2
+                
+                if short_bid > 0:  # Only include if there's a bid
+                    result['short_strike'] = short_strike
+                    result['short_mid'] = short_mid
+                    result['short_bid'] = short_bid
+                    result['spread_cost'] = long_mid - short_mid
+                    result['spread_width'] = long_strike - short_strike
+                    result['max_profit'] = result['spread_width'] - result['spread_cost']
+                    result['downside_to_short'] = ((current_price - short_strike) / current_price) * 100
+            
+            return result
+            
+        except Exception as e:
+            return None
     
     def get_short_score(self, result):
         """Calculate short score (higher = better short candidate)
@@ -239,6 +387,19 @@ class ShortsReport:
             html += self._build_shorts_table(good_shorts)
             html += "</div>"
         
+        # PUT OPTIONS SECTION - for stocks in SELL zone
+        put_candidates = [r for r in scored_results if not r.get('psar_bullish', True) and r.get('short_score', 0) >= 40]
+        if put_candidates:
+            html += """
+            <div class="section" style="background-color: #e8f4fd;">
+                <h3>🎯 PUT OPTIONS STRATEGY</h3>
+                <p style="font-size:11px;"><b>Strategy:</b> Buy deep ITM put (delta ~0.97+) for minimal time premium. 
+                Optionally sell OTM put to create a debit spread and reduce cost.</p>
+                <p style="font-size:11px;"><b>Expiration:</b> 30-45 days optimal for SELL signal duration</p>
+            """
+            html += self._build_puts_table(put_candidates[:15])
+            html += "</div>"
+        
         # All Results
         html += """
         <div class="section">
@@ -328,6 +489,107 @@ class ShortsReport:
             """
         
         html += "</table>"
+        return html
+    
+    def _build_puts_table(self, results):
+        """Build HTML table for put option recommendations"""
+        html = """
+        <table>
+            <tr>
+                <th>Ticker</th>
+                <th>Price</th>
+                <th>Score</th>
+                <th>Exp (DTE)</th>
+                <th>Buy Put</th>
+                <th>ITM%</th>
+                <th>Cost</th>
+                <th>Extr%</th>
+                <th>Sell Put</th>
+                <th>Spread</th>
+                <th>Net Cost</th>
+                <th>Max Profit</th>
+            </tr>
+        """
+        
+        for r in results:
+            put = self.get_put_recommendation(r['ticker'], r['price'], r.get('psar_distance', 0))
+            score = r.get('short_score', 0)
+            
+            if put:
+                # Format buy put info
+                buy_strike = f"${put['long_strike']:.0f}"
+                itm_pct = put['itm_pct']
+                itm_str = f"{itm_pct:.0f}%"
+                cost = f"${put['long_mid']:.2f}"
+                extr_pct = put['extrinsic_pct']
+                extr_str = f"{extr_pct:.1f}%"
+                exp_str = f"{put['expiration']} ({put['dte']}d)"
+                
+                # ITM% color - green if deep enough (30%+), yellow if ok (20-30%), red if shallow
+                if itm_pct >= 30:
+                    itm_color = '#28a745'  # Green - deep ITM, high delta
+                elif itm_pct >= 20:
+                    itm_color = '#ffc107'  # Yellow - moderate
+                else:
+                    itm_color = '#dc3545'  # Red - too shallow, low delta
+                
+                # Extrinsic color - green if low (<5%), yellow if ok (<10%), red if high
+                if extr_pct < 5:
+                    extr_color = '#28a745'  # Green - minimal time premium
+                elif extr_pct < 10:
+                    extr_color = '#ffc107'  # Yellow
+                else:
+                    extr_color = '#dc3545'  # Red - too much premium
+                
+                # Format sell put info if available
+                if 'short_strike' in put and put.get('short_bid', 0) > 0:
+                    sell_strike = f"${put['short_strike']:.0f}"
+                    spread_width = f"${put['spread_width']:.0f}"
+                    net_cost = f"${put['spread_cost']:.2f}"
+                    max_profit = f"${put['max_profit']:.2f}"
+                else:
+                    sell_strike = "-"
+                    spread_width = "-"
+                    net_cost = cost
+                    max_profit = "unlimited"
+                
+                html += f"""
+                <tr>
+                    <td><b>{r['ticker']}</b></td>
+                    <td>${r['price']:.2f}</td>
+                    <td>{score}</td>
+                    <td>{exp_str}</td>
+                    <td><b>{buy_strike}</b></td>
+                    <td style="color:{itm_color};">{itm_str}</td>
+                    <td>{cost}</td>
+                    <td style="color:{extr_color};">{extr_str}</td>
+                    <td>{sell_strike}</td>
+                    <td>{spread_width}</td>
+                    <td><b>{net_cost}</b></td>
+                    <td>{max_profit}</td>
+                </tr>
+                """
+            else:
+                html += f"""
+                <tr>
+                    <td><b>{r['ticker']}</b></td>
+                    <td>${r['price']:.2f}</td>
+                    <td>{score}</td>
+                    <td colspan="9" style="color:#999;">No options available</td>
+                </tr>
+                """
+        
+        html += "</table>"
+        
+        # Add legend
+        html += """
+        <p style="font-size:10px;color:#666;margin-top:10px;">
+        <b>Legend:</b> ITM% 🟢 30%+ (delta ~0.97) | 🟡 20-30% | 🔴 <20% (low delta) | 
+        Extr% 🟢 <5% ideal | 🟡 5-10% | 🔴 >10% (too much premium) |
+        Sell Put = ~25% below price for cushion
+        </p>
+        """
+        
         return html
     
     def send_email(self, additional_email=None):

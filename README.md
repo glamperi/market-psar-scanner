@@ -423,6 +423,30 @@ python market_scanner.py -shortscan -mc 1 -adr
 - Below 50-day MA
 - Low momentum (trend still weakening)
 
+**Put Options Strategy (included in -shorts report):**
+
+For stocks in SELL zones, the report includes put option recommendations:
+
+| Column | Description |
+|--------|-------------|
+| Buy Put | Deep ITM put strike (30-50% above price for delta ~0.97) |
+| ITM% | How deep in-the-money (🟢 30%+ = high delta) |
+| Extr% | Extrinsic/time premium (🟢 <5% = delta ~0.97+) |
+| Sell Put | OTM put strike ~25% below current (for spread) |
+| Net Cost | Spread cost (Buy - Sell premium) |
+| Max Profit | Spread width - Net cost |
+
+**Strategy:**
+- **Buy deep ITM put** (30-40% ITM) = delta ~0.97, moves ~1:1 with stock
+- **Sell OTM put** 25% below = creates debit spread, reduces cost but caps profit
+- **Expiration:** 30-45 days optimal for SELL signal duration
+
+**Example:**
+- Stock at $50, in SELL zone
+- Buy $65 put for $15.50 (ITM 30%, extrinsic ~$0.50 = 3%)
+- Sell $37.50 put for $1.00
+- Net cost: $14.50, Max profit: $27.50 - $14.50 = $13.00
+
 **OTC Stock Short Interest:**
 
 For OTC stocks (like MTPLF, TSWCF), yfinance often doesn't have short interest data. The scanner uses multiple fallback sources:
@@ -437,8 +461,8 @@ Create a `short_interest.csv` file with your own data:
 
 ```csv
 Symbol,ShortPercent,DaysToCover
-MTPLF,5.2,3.21
-TSWCF,2.5,1.8
+MTPLF,2.6,3.21
+# TSWCF - look up manually
 ```
 
 Get short interest data from:
@@ -484,14 +508,14 @@ Used to show position sizes in portfolio reports and identify concentrated posit
 Manual override for short interest data (useful for OTC stocks):
 ```csv
 Symbol,ShortPercent,DaysToCover
-MTPLF,5.2,3.21
-TSWCF,2.5,1.8
+MTPLF,2.6,3.21
+# TSWCF - look up manually
 BYND,25.3,4.5
 ```
 
 Fields:
 - **Symbol**: Ticker symbol
-- **ShortPercent**: Short interest as % of float (e.g., 5.2 = 5.2%)
+- **ShortPercent**: Short interest as % of float (e.g., 2.6 = 2.6%)
 - **DaysToCover**: Days to cover (short ratio)
 
 This file takes priority over yfinance and FINRA data.
