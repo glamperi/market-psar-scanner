@@ -19,126 +19,147 @@ _finra_short_cache = {}
 
 def get_market_put_call_ratio():
     """
-    Get market put/call ratio data and apply PSAR analysis.
+    Get CBOE equity put/call ratio data and apply PSAR analysis.
     
     Interpretation (contrarian indicator):
     - P/C < 0.5: Extreme bullishness = POTENTIAL TOP (bearish signal)
-    - P/C 0.5-0.7: Bullish sentiment = caution for longs
-    - P/C 0.7-1.0: Neutral
-    - P/C > 1.0: Bearish sentiment = potential buying opportunity
-    - P/C > 1.2: Extreme fear = POTENTIAL BOTTOM (bullish signal)
+    - P/C 0.5-0.6: High bullishness = caution for longs  
+    - P/C 0.6-0.7: Bullish sentiment = normal
+    - P/C 0.7-0.9: Neutral
+    - P/C > 0.9: Elevated fear = potential buying opportunity
+    - P/C > 1.0: High fear = contrarian buy signal
     
-    Returns dict with current ratio, historical data, and PSAR signal
+    Returns dict with current ratio, PSAR signal on P/C ratio
     """
     try:
-        import yfinance as yf
-        
-        # Use CBOE Equity Put/Call Ratio via VIX options as proxy
-        # Or we can calculate from SPY options
-        spy = yf.Ticker("SPY")
-        
-        # Get historical data to calculate PSAR on the P/C ratio
-        # We'll use VIX as a sentiment proxy since direct P/C history isn't in yfinance
-        vix = yf.Ticker("^VIX")
-        vix_hist = vix.history(period="3mo")
-        
-        if vix_hist.empty:
-            return None
-        
-        # Get current SPY options to calculate actual P/C ratio
-        try:
-            expirations = spy.options
-            if expirations:
-                # Get nearest expiration
-                nearest_exp = expirations[0]
-                chain = spy.option_chain(nearest_exp)
-                
-                put_volume = chain.puts['volume'].sum() if 'volume' in chain.puts.columns else 0
-                call_volume = chain.calls['volume'].sum() if 'volume' in chain.calls.columns else 0
-                
-                put_oi = chain.puts['openInterest'].sum() if 'openInterest' in chain.puts.columns else 0
-                call_oi = chain.calls['openInterest'].sum() if 'openInterest' in chain.calls.columns else 0
-                
-                if call_volume > 0:
-                    pc_ratio_volume = put_volume / call_volume
-                else:
-                    pc_ratio_volume = None
-                    
-                if call_oi > 0:
-                    pc_ratio_oi = put_oi / call_oi
-                else:
-                    pc_ratio_oi = None
-            else:
-                pc_ratio_volume = None
-                pc_ratio_oi = None
-        except:
-            pc_ratio_volume = None
-            pc_ratio_oi = None
-        
-        # Apply PSAR to VIX as sentiment proxy
-        # High VIX = fear = similar to high P/C ratio
+        import requests
+        import io
         from ta.trend import PSARIndicator
         
-        if len(vix_hist) >= 20:
+        # Fetch CBOE equity put/call ratio data
+        url = "https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/equitypc.csv"
+        response = requests.get(url, timeout=10)
+        
+        if response.status_code != 200:
+            return None
+        
+        # Parse CSV - skip header rows
+        lines = response.text.strip().split('\n')
+        data_lines = []
+        for line in lines:
+            if line.startswith('1') or line.startswith('2'):  # Date lines start with year
+                parts = line.split(',')
+                if len(parts) >= 5:
+                    try:
+                        date_str = parts[0]
+                        pc_ratio = float(parts[4])
+                        data_lines.append({'date': date_str, 'pc_ratio': pc_ratio})
+                    except:
+                        continue
+        
+        if len(data_lines) < 20:
+            return None
+        
+        # Create DataFrame for PSAR calculation
+        df = pd.DataFrame(data_lines)
+        df['date'] = pd.to_datetime(df['date'], format='%m/%d/%Y')
+        df = df.sort_values('date').tail(100)  # Last 100 trading days
+        
+        # Get current P/C ratio
+        current_pc = df['pc_ratio'].iloc[-1]
+        current_date = df['date'].iloc[-1]
+        
+        # For PSAR, we need High/Low/Close - use P/C ratio as all three
+        # This lets us detect trend changes in the P/C ratio itself
+        df['High'] = df['pc_ratio'].rolling(3).max().fillna(df['pc_ratio'])
+        df['Low'] = df['pc_ratio'].rolling(3).min().fillna(df['pc_ratio'])
+        df['Close'] = df['pc_ratio']
+        
+        # Apply PSAR to P/C ratio
+        if len(df) >= 20:
             psar_indicator = PSARIndicator(
-                high=vix_hist['High'], 
-                low=vix_hist['Low'], 
-                close=vix_hist['Close']
+                high=df['High'], 
+                low=df['Low'], 
+                close=df['Close'],
+                step=0.02,
+                max_step=0.2
             )
+            psar = psar_indicator.psar()
             psar_up = psar_indicator.psar_up()
-            vix_psar_bullish = pd.notna(psar_up.iloc[-1])  # VIX PSAR bullish = fear rising
             
-            current_vix = vix_hist['Close'].iloc[-1]
-            vix_psar = psar_indicator.psar().iloc[-1]
+            # PSAR bullish on P/C ratio means P/C is trending UP (fear rising)
+            # This is actually BEARISH for stocks (contrarian)
+            pc_psar_bullish = pd.notna(psar_up.iloc[-1])
+            pc_psar_value = psar.iloc[-1]
             
-            # For market: VIX PSAR bullish (fear rising) = bearish for stocks
-            # VIX PSAR bearish (fear falling) = bullish for stocks
-            if vix_psar_bullish:
-                sentiment_trend = 'FEAR_RISING'  # Bearish for stocks
-            else:
-                sentiment_trend = 'FEAR_FALLING'  # Bullish for stocks
+            # Calculate distance from PSAR
+            pc_psar_dist = ((current_pc - pc_psar_value) / pc_psar_value) * 100 if pc_psar_value > 0 else 0
         else:
-            current_vix = None
-            vix_psar_bullish = None
-            sentiment_trend = 'UNKNOWN'
+            pc_psar_bullish = None
+            pc_psar_value = None
+            pc_psar_dist = 0
         
-        # Determine market sentiment warning
-        pc_ratio = pc_ratio_volume if pc_ratio_volume else pc_ratio_oi
+        # Get 10-day and 20-day moving averages
+        pc_ma10 = df['pc_ratio'].tail(10).mean()
+        pc_ma20 = df['pc_ratio'].tail(20).mean()
         
-        if pc_ratio:
-            if pc_ratio < 0.5:
-                warning = "⚠️ EXTREME COMPLACENCY - Potential market top"
-                warning_level = 'DANGER'
-            elif pc_ratio < 0.6:
-                warning = "🟡 High bullishness - Caution for new longs"
-                warning_level = 'CAUTION'
-            elif pc_ratio < 0.7:
-                warning = "Bullish sentiment - Normal"
-                warning_level = 'NORMAL'
-            elif pc_ratio > 1.2:
-                warning = "🟢 EXTREME FEAR - Potential market bottom"
-                warning_level = 'OPPORTUNITY'
-            elif pc_ratio > 1.0:
-                warning = "🟢 Elevated fear - Contrarian buy signal"
-                warning_level = 'BULLISH'
-            else:
-                warning = "Neutral sentiment"
-                warning_level = 'NORMAL'
+        # 12-month high/low (approximately 252 trading days, but we only have 100)
+        pc_high = df['pc_ratio'].max()
+        pc_low = df['pc_ratio'].min()
+        
+        # Determine sentiment and warning
+        if current_pc < 0.50:
+            warning = "⚠️ EXTREME COMPLACENCY (<0.50) - Potential market top"
+            warning_level = 'DANGER'
+        elif current_pc < 0.60:
+            warning = "🟡 HIGH BULLISHNESS (0.50-0.60) - Caution for new longs"
+            warning_level = 'CAUTION'
+        elif current_pc < 0.70:
+            warning = "Bullish sentiment (0.60-0.70) - Normal"
+            warning_level = 'NORMAL'
+        elif current_pc < 0.90:
+            warning = "Neutral sentiment (0.70-0.90)"
+            warning_level = 'NORMAL'
+        elif current_pc < 1.00:
+            warning = "🟢 Elevated fear (0.90-1.00) - Potential buying opportunity"
+            warning_level = 'BULLISH'
         else:
-            warning = "Unable to calculate P/C ratio"
-            warning_level = 'UNKNOWN'
+            warning = "🟢 HIGH FEAR (>1.00) - Contrarian buy signal / potential bottom"
+            warning_level = 'OPPORTUNITY'
+        
+        # PSAR trend interpretation
+        if pc_psar_bullish is not None:
+            if pc_psar_bullish:
+                # P/C ratio trending UP = fear rising = bearish for stocks
+                psar_trend = 'FEAR_RISING'
+                psar_note = 'P/C PSAR ↗️ (fear rising - caution for longs)'
+            else:
+                # P/C ratio trending DOWN = fear falling = bullish for stocks
+                psar_trend = 'FEAR_FALLING'
+                psar_note = 'P/C PSAR ↘️ (fear falling - bullish for stocks)'
+        else:
+            psar_trend = 'UNKNOWN'
+            psar_note = ''
         
         return {
-            'pc_ratio_volume': pc_ratio_volume,
-            'pc_ratio_oi': pc_ratio_oi,
-            'current_vix': current_vix,
-            'vix_psar_bullish': vix_psar_bullish,
-            'sentiment_trend': sentiment_trend,
+            'pc_ratio': current_pc,
+            'pc_date': current_date.strftime('%Y-%m-%d'),
+            'pc_ma10': pc_ma10,
+            'pc_ma20': pc_ma20,
+            'pc_high_100d': pc_high,
+            'pc_low_100d': pc_low,
+            'pc_psar_bullish': pc_psar_bullish,
+            'pc_psar_value': pc_psar_value,
+            'pc_psar_dist': pc_psar_dist,
+            'psar_trend': psar_trend,
+            'psar_note': psar_note,
             'warning': warning,
-            'warning_level': warning_level
+            'warning_level': warning_level,
+            'source': 'CBOE Equity P/C Ratio'
         }
         
     except Exception as e:
+        # Fallback: return None
         return None
 
 def get_finra_short_interest(ticker):
@@ -757,16 +778,29 @@ class MarketScanner:
             # ==========================================
             rsi_series = rsi.rsi()
             if len(rsi_series.dropna()) >= 20:
-                # Need to create a DataFrame for PSAR calculation on RSI
+                # Create rolling high/low for PSAR to have range to work with
+                rsi_high = rsi_series.rolling(3).max().fillna(rsi_series)
+                rsi_low = rsi_series.rolling(3).min().fillna(rsi_series)
+                
                 rsi_df = pd.DataFrame({
-                    'High': rsi_series,
-                    'Low': rsi_series,
+                    'High': rsi_high,
+                    'Low': rsi_low,
                     'Close': rsi_series
-                })
+                }).dropna()
+                
                 try:
-                    prsi_indicator = PSARIndicator(high=rsi_df['High'], low=rsi_df['Low'], close=rsi_df['Close'])
-                    prsi_up = prsi_indicator.psar_up()
-                    prsi_bullish = pd.notna(prsi_up.iloc[-1])
+                    if len(rsi_df) >= 14:
+                        prsi_indicator = PSARIndicator(
+                            high=rsi_df['High'], 
+                            low=rsi_df['Low'], 
+                            close=rsi_df['Close'],
+                            step=0.02,
+                            max_step=0.2
+                        )
+                        prsi_up = prsi_indicator.psar_up()
+                        prsi_bullish = pd.notna(prsi_up.iloc[-1])
+                    else:
+                        prsi_bullish = rsi_value > 50  # Fallback
                 except:
                     prsi_bullish = rsi_value > 50  # Fallback
             else:

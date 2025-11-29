@@ -167,11 +167,12 @@ class EmailReport:
             pc_data = get_market_put_call_ratio()
             
             if pc_data:
-                pc_ratio = pc_data.get('pc_ratio_volume') or pc_data.get('pc_ratio_oi')
-                vix = pc_data.get('current_vix')
-                sentiment = pc_data.get('sentiment_trend')
+                pc_ratio = pc_data.get('pc_ratio')
+                pc_date = pc_data.get('pc_date', '')
                 warning = pc_data.get('warning')
                 warning_level = pc_data.get('warning_level')
+                psar_note = pc_data.get('psar_note', '')
+                pc_psar_bullish = pc_data.get('pc_psar_bullish')
                 
                 # Color based on warning level
                 if warning_level == 'DANGER':
@@ -187,27 +188,24 @@ class EmailReport:
                     box_color = '#e2e3e5'
                     border_color = '#6c757d'
                 
-                # Sentiment trend icon
-                if sentiment == 'FEAR_RISING':
-                    trend_icon = '📈 Fear Rising (VIX PSAR ↗️)'
-                    trend_note = 'Caution for longs'
-                elif sentiment == 'FEAR_FALLING':
-                    trend_icon = '📉 Fear Falling (VIX PSAR ↘️)'
-                    trend_note = 'Bullish for stocks'
-                else:
-                    trend_icon = '—'
-                    trend_note = ''
-                
                 html += f"""
                 <div style='background-color:{box_color}; border-left:4px solid {border_color}; padding:12px; margin:10px 0;'>
-                    <strong>🎯 MARKET SENTIMENT (Put/Call Ratio)</strong><br>
+                    <strong>🎯 MARKET SENTIMENT (CBOE Equity Put/Call Ratio)</strong><br>
                     <table style='width:auto; margin-top:8px; border:none;'>
-                        <tr><td style='border:none;'><strong>P/C Ratio:</strong></td><td style='border:none;'><strong>{pc_ratio:.2f}</strong></td><td style='border:none; padding-left:20px;'><strong>VIX:</strong></td><td style='border:none;'>{vix:.1f}</td></tr>
-                        <tr><td style='border:none;'><strong>Trend:</strong></td><td style='border:none;' colspan='3'>{trend_icon} - {trend_note}</td></tr>
+                        <tr>
+                            <td style='border:none;'><strong>P/C Ratio:</strong></td>
+                            <td style='border:none;'><strong>{pc_ratio:.2f}</strong></td>
+                            <td style='border:none; padding-left:20px;'><strong>Date:</strong></td>
+                            <td style='border:none;'>{pc_date}</td>
+                        </tr>
+                        <tr>
+                            <td style='border:none;'><strong>PSAR Trend:</strong></td>
+                            <td style='border:none;' colspan='3'>{psar_note}</td>
+                        </tr>
                     </table>
                     <p style='margin:8px 0 0 0; font-weight:bold;'>{warning}</p>
                     <p style='font-size:10px; color:#666; margin:5px 0 0 0;'>
-                        P/C < 0.5 = Extreme complacency (top) | 0.5-0.7 = Bullish (caution) | 0.7-1.0 = Neutral | > 1.0 = Fear (buy signal) | > 1.2 = Extreme fear (bottom)
+                        &lt;0.50=extreme complacency (TOP) | 0.50-0.60=caution | 0.60-0.90=normal | &gt;0.90=fear (BUY) | &gt;1.0=extreme fear (BOTTOM)
                     </p>
                 </div>
                 """

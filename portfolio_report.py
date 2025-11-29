@@ -264,11 +264,10 @@ class PortfolioReport:
             pc_data = get_market_put_call_ratio()
             
             if pc_data:
-                pc_ratio = pc_data.get('pc_ratio_volume') or pc_data.get('pc_ratio_oi')
-                vix = pc_data.get('current_vix')
-                sentiment = pc_data.get('sentiment_trend')
+                pc_ratio = pc_data.get('pc_ratio')
                 warning = pc_data.get('warning')
                 warning_level = pc_data.get('warning_level')
+                psar_note = pc_data.get('psar_note', '')
                 
                 # Color based on warning level
                 if warning_level == 'DANGER':
@@ -284,20 +283,9 @@ class PortfolioReport:
                     box_color = '#e2e3e5'
                     border_color = '#6c757d'
                 
-                # Sentiment trend icon
-                if sentiment == 'FEAR_RISING':
-                    trend_icon = '📈 Fear Rising'
-                    trend_note = '(VIX PSAR ↗️ - Caution)'
-                elif sentiment == 'FEAR_FALLING':
-                    trend_icon = '📉 Fear Falling'
-                    trend_note = '(VIX PSAR ↘️ - Bullish)'
-                else:
-                    trend_icon = '—'
-                    trend_note = ''
-                
                 html += f"""
                 <div style='background-color:{box_color}; border-left:4px solid {border_color}; padding:10px; margin:10px 0;'>
-                    <strong>🎯 Market Sentiment:</strong> P/C Ratio <strong>{pc_ratio:.2f}</strong> | VIX {vix:.1f} | {trend_icon} {trend_note}<br>
+                    <strong>🎯 Market Sentiment:</strong> P/C Ratio <strong>{pc_ratio:.2f}</strong> | {psar_note}<br>
                     <span style='font-size:12px;'>{warning}</span>
                 </div>
                 """
