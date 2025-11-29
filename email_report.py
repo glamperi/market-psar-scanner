@@ -161,6 +161,59 @@ class EmailReport:
         
         html += f"<p style='color:#7f8c8d; font-size:11px;'>Scanned ~2,500 stocks from S&P 500, NASDAQ 100, Russell 2000, IBD | Filtered: {filter_desc} | {len(self.all_results)} stocks passed</p>"
         
+        # PUT/CALL RATIO SENTIMENT INDICATOR
+        try:
+            from market_scanner import get_market_put_call_ratio
+            pc_data = get_market_put_call_ratio()
+            
+            if pc_data:
+                pc_ratio = pc_data.get('pc_ratio_volume') or pc_data.get('pc_ratio_oi')
+                vix = pc_data.get('current_vix')
+                sentiment = pc_data.get('sentiment_trend')
+                warning = pc_data.get('warning')
+                warning_level = pc_data.get('warning_level')
+                
+                # Color based on warning level
+                if warning_level == 'DANGER':
+                    box_color = '#f8d7da'
+                    border_color = '#dc3545'
+                elif warning_level == 'CAUTION':
+                    box_color = '#fff3cd'
+                    border_color = '#ffc107'
+                elif warning_level in ['OPPORTUNITY', 'BULLISH']:
+                    box_color = '#d4edda'
+                    border_color = '#28a745'
+                else:
+                    box_color = '#e2e3e5'
+                    border_color = '#6c757d'
+                
+                # Sentiment trend icon
+                if sentiment == 'FEAR_RISING':
+                    trend_icon = '📈 Fear Rising (VIX PSAR ↗️)'
+                    trend_note = 'Caution for longs'
+                elif sentiment == 'FEAR_FALLING':
+                    trend_icon = '📉 Fear Falling (VIX PSAR ↘️)'
+                    trend_note = 'Bullish for stocks'
+                else:
+                    trend_icon = '—'
+                    trend_note = ''
+                
+                html += f"""
+                <div style='background-color:{box_color}; border-left:4px solid {border_color}; padding:12px; margin:10px 0;'>
+                    <strong>🎯 MARKET SENTIMENT (Put/Call Ratio)</strong><br>
+                    <table style='width:auto; margin-top:8px; border:none;'>
+                        <tr><td style='border:none;'><strong>P/C Ratio:</strong></td><td style='border:none;'><strong>{pc_ratio:.2f}</strong></td><td style='border:none; padding-left:20px;'><strong>VIX:</strong></td><td style='border:none;'>{vix:.1f}</td></tr>
+                        <tr><td style='border:none;'><strong>Trend:</strong></td><td style='border:none;' colspan='3'>{trend_icon} - {trend_note}</td></tr>
+                    </table>
+                    <p style='margin:8px 0 0 0; font-weight:bold;'>{warning}</p>
+                    <p style='font-size:10px; color:#666; margin:5px 0 0 0;'>
+                        P/C < 0.5 = Extreme complacency (top) | 0.5-0.7 = Bullish (caution) | 0.7-1.0 = Neutral | > 1.0 = Fear (buy signal) | > 1.2 = Extreme fear (bottom)
+                    </p>
+                </div>
+                """
+        except Exception as e:
+            pass  # Skip if can't get P/C data
+        
         # ZONE GUIDE
         html += """
         <div class='section-gray'>📊 PSAR ZONE & MOMENTUM GUIDE</div>
@@ -184,12 +237,13 @@ class EmailReport:
         # Categorize stocks into tiers
         all_strong = [r for r in self.all_results if r.get('psar_zone') == 'STRONG_BUY' and not r.get('is_watchlist')]
         
-        # TOP TIER: PSAR>5% + Momentum>=7 + IR>=40 + Above 50MA + OBV Confirms
+        # TOP TIER: PSAR>5% + Momentum>=7 + IR>=40 + Above 50MA + OBV Confirms + NOT Overbought
         top_tier = [r for r in all_strong if 
                     r.get('psar_momentum', 0) >= 7 and 
                     r.get('signal_weight', 0) >= 40 and 
                     r.get('above_ma50', False) and
-                    r.get('obv_status', 'NEUTRAL') == 'CONFIRM']
+                    r.get('obv_status', 'NEUTRAL') == 'CONFIRM' and
+                    r.get('atr_status', 'NORMAL') != 'OVERBOUGHT']  # Exclude overextended!
         
         # STRONG BUY: Rest of >5%
         strong_buy = [r for r in all_strong if r not in top_tier]
@@ -206,6 +260,15 @@ class EmailReport:
         for lst in [top_tier, strong_buy, buy, neutral, weak, sell]:
             lst.sort(key=lambda x: (-x.get('psar_momentum', 0), -x.get('signal_weight', 0)))
         
+        # Count overbought stocks in buy zones (warning)
+        overbought_buys = [r for r in self.all_results 
+                          if r.get('psar_zone') in ['STRONG_BUY', 'BUY'] 
+                          and r.get('atr_status') == 'OVERBOUGHT']
+        
+        # Count oversold stocks (best entries)
+        oversold_stocks = [r for r in self.all_results 
+                          if r.get('atr_status') == 'OVERSOLD']
+        
         # SUMMARY
         html += f"""
         <div class='summary-box'>
@@ -218,6 +281,10 @@ class EmailReport:
                 <tr><td>🟠 <strong>WEAK:</strong></td><td>{len(weak)}</td></tr>
                 <tr><td>🔴 <strong>SELL:</strong></td><td>{len(sell)}</td></tr>
             </table>
+            <p style='font-size:10px; margin-top:8px;'>
+                🔥 <strong>Overbought (avoid buying):</strong> {len(overbought_buys)} stocks in buy zones are overextended<br>
+                ❄️ <strong>Oversold (best entries):</strong> {len(oversold_stocks)} stocks at good entry points
+            </p>
         </div>
         """
         
@@ -239,6 +306,27 @@ class EmailReport:
             html += ", ".join([f"<strong>{r['ticker']}</strong> ({r['psar_distance']:+.1f}%, M:{r['psar_momentum']})" for r in improving[:10]])
             if len(improving) > 10:
                 html += f" +{len(improving)-10} more"
+            html += "</div>"
+        
+        # ATR OVERBOUGHT WARNING - Stocks in buy zones that are overextended
+        if overbought_buys:
+            overbought_buys.sort(key=lambda x: -x.get('psar_distance', 0))
+            html += "<div class='alert-box' style='background-color:#fff3cd; border-left:4px solid #ffc107;'>"
+            html += f"<strong>🔥 {len(overbought_buys)} BUY zone stocks are OVERBOUGHT (wait for pullback):</strong> "
+            html += ", ".join([f"<strong>{r['ticker']}</strong> ({r['psar_zone']})" for r in overbought_buys[:10]])
+            if len(overbought_buys) > 10:
+                html += f" +{len(overbought_buys)-10} more"
+            html += "</div>"
+        
+        # OVERSOLD OPPORTUNITIES - Best entry points
+        oversold_in_buy = [r for r in oversold_stocks if r.get('psar_zone') in ['STRONG_BUY', 'BUY', 'NEUTRAL']]
+        if oversold_in_buy:
+            oversold_in_buy.sort(key=lambda x: (-1 if x.get('psar_zone') == 'STRONG_BUY' else 0 if x.get('psar_zone') == 'BUY' else 1, -x.get('psar_momentum', 0)))
+            html += "<div class='alert-box' style='background-color:#d1ecf1; border-left:4px solid #17a2b8;'>"
+            html += f"<strong>❄️ {len(oversold_in_buy)} stocks OVERSOLD (ideal entry points):</strong> "
+            html += ", ".join([f"<strong>{r['ticker']}</strong> ({r['psar_zone']})" for r in oversold_in_buy[:10]])
+            if len(oversold_in_buy) > 10:
+                html += f" +{len(oversold_in_buy)-10} more"
             html += "</div>"
         
         # WATCHLIST
@@ -311,13 +399,30 @@ class EmailReport:
         
         return html
     
+    def get_atr_display(self, result):
+        """Get ATR status display with % from EMA8"""
+        atr_status = result.get('atr_status', 'NORMAL')
+        atr_pct = result.get('atr_pct', 0)
+        if atr_status == 'OVERBOUGHT':
+            return f'🔥{atr_pct:+.0f}%'
+        elif atr_status == 'OVERSOLD':
+            return f'❄️{atr_pct:+.0f}%'
+        else:
+            return f'{atr_pct:+.0f}%'
+    
+    def get_prsi_display(self, result):
+        """Get PRSI display"""
+        prsi_bullish = result.get('prsi_bullish', True)
+        return '↗️' if prsi_bullish else '↘️'
+    
     def _build_zone_table(self, stocks, zone_class):
         th_class = f'th-{zone_class}'
         
         html = f"""<table><tr>
             <th class='{th_class}'>Ticker</th><th class='{th_class}'>Company</th><th class='{th_class}'>Zone</th>
             <th class='{th_class}'>Mom</th><th class='{th_class}'>Price</th><th class='{th_class}'>PSAR %</th>
-            <th class='{th_class}'>OBV</th><th class='{th_class}'>IR</th><th class='{th_class}'>RSI</th><th class='{th_class}'>50MA</th>
+            <th class='{th_class}'>ATR</th><th class='{th_class}'>PRSI</th>
+            <th class='{th_class}'>OBV</th><th class='{th_class}'>IR</th><th class='{th_class}'>50MA</th>
             <th class='{th_class}'>Indicators</th></tr>"""
         
         for r in stocks:
@@ -329,6 +434,8 @@ class EmailReport:
             ma_html = "<span style='color:#27ae60;'>↑</span>" if above_ma else "<span style='color:#e74c3c;'>↓</span>"
             
             obv_html = self.get_obv_display(r.get('obv_status', 'NEUTRAL'))
+            atr_html = self.get_atr_display(r)
+            prsi_html = self.get_prsi_display(r)
             
             is_ibd = 'IBD' in r.get('source', '')
             ticker_display = f"⭐{r['ticker']}" if is_ibd else r['ticker']
@@ -339,8 +446,10 @@ class EmailReport:
                 <td>{self.get_momentum_display(momentum)}</td>
                 <td>${r['price']:.2f}</td>
                 <td style='color:{zone_color}; font-weight:bold;'>{r['psar_distance']:+.1f}%</td>
+                <td>{atr_html}</td>
+                <td>{prsi_html}</td>
                 <td>{obv_html}</td>
-                <td>{r['signal_weight']}</td><td>{r['rsi']:.0f}</td><td>{ma_html}</td>
+                <td>{r['signal_weight']}</td><td>{ma_html}</td>
                 <td style='font-size:10px;'>{self.get_indicator_symbols(r)}</td></tr>"""
         
         html += "</table>"
