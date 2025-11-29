@@ -17,6 +17,130 @@ from ta.trend import CCIIndicator
 # Cache for FINRA short interest data (to avoid repeated API calls)
 _finra_short_cache = {}
 
+def get_market_put_call_ratio():
+    """
+    Get market put/call ratio data and apply PSAR analysis.
+    
+    Interpretation (contrarian indicator):
+    - P/C < 0.5: Extreme bullishness = POTENTIAL TOP (bearish signal)
+    - P/C 0.5-0.7: Bullish sentiment = caution for longs
+    - P/C 0.7-1.0: Neutral
+    - P/C > 1.0: Bearish sentiment = potential buying opportunity
+    - P/C > 1.2: Extreme fear = POTENTIAL BOTTOM (bullish signal)
+    
+    Returns dict with current ratio, historical data, and PSAR signal
+    """
+    try:
+        import yfinance as yf
+        
+        # Use CBOE Equity Put/Call Ratio via VIX options as proxy
+        # Or we can calculate from SPY options
+        spy = yf.Ticker("SPY")
+        
+        # Get historical data to calculate PSAR on the P/C ratio
+        # We'll use VIX as a sentiment proxy since direct P/C history isn't in yfinance
+        vix = yf.Ticker("^VIX")
+        vix_hist = vix.history(period="3mo")
+        
+        if vix_hist.empty:
+            return None
+        
+        # Get current SPY options to calculate actual P/C ratio
+        try:
+            expirations = spy.options
+            if expirations:
+                # Get nearest expiration
+                nearest_exp = expirations[0]
+                chain = spy.option_chain(nearest_exp)
+                
+                put_volume = chain.puts['volume'].sum() if 'volume' in chain.puts.columns else 0
+                call_volume = chain.calls['volume'].sum() if 'volume' in chain.calls.columns else 0
+                
+                put_oi = chain.puts['openInterest'].sum() if 'openInterest' in chain.puts.columns else 0
+                call_oi = chain.calls['openInterest'].sum() if 'openInterest' in chain.calls.columns else 0
+                
+                if call_volume > 0:
+                    pc_ratio_volume = put_volume / call_volume
+                else:
+                    pc_ratio_volume = None
+                    
+                if call_oi > 0:
+                    pc_ratio_oi = put_oi / call_oi
+                else:
+                    pc_ratio_oi = None
+            else:
+                pc_ratio_volume = None
+                pc_ratio_oi = None
+        except:
+            pc_ratio_volume = None
+            pc_ratio_oi = None
+        
+        # Apply PSAR to VIX as sentiment proxy
+        # High VIX = fear = similar to high P/C ratio
+        from ta.trend import PSARIndicator
+        
+        if len(vix_hist) >= 20:
+            psar_indicator = PSARIndicator(
+                high=vix_hist['High'], 
+                low=vix_hist['Low'], 
+                close=vix_hist['Close']
+            )
+            psar_up = psar_indicator.psar_up()
+            vix_psar_bullish = pd.notna(psar_up.iloc[-1])  # VIX PSAR bullish = fear rising
+            
+            current_vix = vix_hist['Close'].iloc[-1]
+            vix_psar = psar_indicator.psar().iloc[-1]
+            
+            # For market: VIX PSAR bullish (fear rising) = bearish for stocks
+            # VIX PSAR bearish (fear falling) = bullish for stocks
+            if vix_psar_bullish:
+                sentiment_trend = 'FEAR_RISING'  # Bearish for stocks
+            else:
+                sentiment_trend = 'FEAR_FALLING'  # Bullish for stocks
+        else:
+            current_vix = None
+            vix_psar_bullish = None
+            sentiment_trend = 'UNKNOWN'
+        
+        # Determine market sentiment warning
+        pc_ratio = pc_ratio_volume if pc_ratio_volume else pc_ratio_oi
+        
+        if pc_ratio:
+            if pc_ratio < 0.5:
+                warning = "⚠️ EXTREME COMPLACENCY - Potential market top"
+                warning_level = 'DANGER'
+            elif pc_ratio < 0.6:
+                warning = "🟡 High bullishness - Caution for new longs"
+                warning_level = 'CAUTION'
+            elif pc_ratio < 0.7:
+                warning = "Bullish sentiment - Normal"
+                warning_level = 'NORMAL'
+            elif pc_ratio > 1.2:
+                warning = "🟢 EXTREME FEAR - Potential market bottom"
+                warning_level = 'OPPORTUNITY'
+            elif pc_ratio > 1.0:
+                warning = "🟢 Elevated fear - Contrarian buy signal"
+                warning_level = 'BULLISH'
+            else:
+                warning = "Neutral sentiment"
+                warning_level = 'NORMAL'
+        else:
+            warning = "Unable to calculate P/C ratio"
+            warning_level = 'UNKNOWN'
+        
+        return {
+            'pc_ratio_volume': pc_ratio_volume,
+            'pc_ratio_oi': pc_ratio_oi,
+            'current_vix': current_vix,
+            'vix_psar_bullish': vix_psar_bullish,
+            'sentiment_trend': sentiment_trend,
+            'warning': warning,
+            'warning_level': warning_level
+        }
+        
+    except Exception as e:
+        return None
+
 def get_finra_short_interest(ticker):
     """
     Fetch short interest data from FINRA for OTC stocks.
@@ -627,13 +751,95 @@ class MarketScanner:
             rsi = RSIIndicator(close=hist['Close'])
             rsi_value = rsi.rsi().iloc[-1]
             
-            # Signal Weight
+            # ==========================================
+            # PRSI: PSAR on RSI (trend of RSI itself)
+            # Better than raw RSI - shows if RSI is trending up or down
+            # ==========================================
+            rsi_series = rsi.rsi()
+            if len(rsi_series.dropna()) >= 20:
+                # Need to create a DataFrame for PSAR calculation on RSI
+                rsi_df = pd.DataFrame({
+                    'High': rsi_series,
+                    'Low': rsi_series,
+                    'Close': rsi_series
+                })
+                try:
+                    prsi_indicator = PSARIndicator(high=rsi_df['High'], low=rsi_df['Low'], close=rsi_df['Close'])
+                    prsi_up = prsi_indicator.psar_up()
+                    prsi_bullish = pd.notna(prsi_up.iloc[-1])
+                except:
+                    prsi_bullish = rsi_value > 50  # Fallback
+            else:
+                prsi_bullish = rsi_value > 50  # Fallback
+            
+            # ==========================================
+            # ATR Overextended Indicator
+            # Overbought: Price > EMA8 + ATR
+            # Oversold: Price < EMA8 - ATR
+            # ==========================================
+            # Calculate ATR (14-period)
+            tr1 = hist['High'] - hist['Low']
+            tr2 = abs(hist['High'] - hist['Close'].shift(1))
+            tr3 = abs(hist['Low'] - hist['Close'].shift(1))
+            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+            atr = tr.rolling(window=14).mean().iloc[-1]
+            
+            # Calculate 8-day EMA
+            ema8 = hist['Close'].ewm(span=8, adjust=False).mean().iloc[-1]
+            
+            # Determine overextended status
+            atr_upper = ema8 + atr
+            atr_lower = ema8 - atr
+            
+            # Calculate how far price is from bands (as % of ATR)
+            if atr > 0:
+                dist_to_upper = (atr_upper - current_price) / atr  # Positive = room to go up
+                dist_to_lower = (current_price - atr_lower) / atr  # Positive = room to go down
+            else:
+                dist_to_upper = 0
+                dist_to_lower = 0
+            
+            if current_price > atr_upper:
+                atr_status = 'OVERBOUGHT'  # 🔥 Good for shorts/covered calls, bad for new buys
+            elif current_price < atr_lower:
+                atr_status = 'OVERSOLD'    # ❄️ Good for buys, bad for shorts
+            else:
+                atr_status = 'NORMAL'
+            
+            atr_value = float(atr) if pd.notna(atr) else 0
+            atr_pct_from_ema = ((current_price - ema8) / ema8) * 100 if ema8 > 0 else 0
+            
+            # Signal Weight - now different for buys vs sells
             signal_weight = 0
-            if has_macd: signal_weight += 30
-            if has_bb: signal_weight += 10
-            if has_willr: signal_weight += 20
-            if has_coppock: signal_weight += 10
-            if has_ultimate: signal_weight += 30
+            signal_weight_buy = 0
+            signal_weight_sell = 0
+            
+            # Buy-focused weights (bullish signals)
+            if has_macd: signal_weight_buy += 35      # MACD bullish crossover - key for buys
+            if has_bb: signal_weight_buy += 15        # Touching lower BB - buy signal
+            if has_willr: signal_weight_buy += 15     # Oversold Williams %R
+            if has_coppock: signal_weight_buy += 20   # Coppock turning up - key for buys
+            if has_ultimate: signal_weight_buy += 15  # Ultimate oscillator oversold
+            
+            # Sell-focused weights (bearish signals)
+            macd_bearish = macd_line.iloc[-1] < signal_line.iloc[-1]
+            willr_overbought = willr_value.iloc[-1] > -20
+            bb_upper = bb.bollinger_hband()
+            at_bb_upper = current_price >= bb_upper.iloc[-1]
+            coppock_bearish = coppock.iloc[-1] < 0 and coppock.iloc[-2] >= 0
+            ultimate_overbought = ult_value.iloc[-1] > 70
+            
+            if macd_bearish: signal_weight_sell += 35
+            if at_bb_upper: signal_weight_sell += 15
+            if willr_overbought: signal_weight_sell += 15
+            if coppock_bearish: signal_weight_sell += 20
+            if ultimate_overbought: signal_weight_sell += 15
+            
+            # Use appropriate weight based on current zone
+            if is_bullish:
+                signal_weight = signal_weight_buy
+            else:
+                signal_weight = signal_weight_sell
             
             # Entry Quality Score (A/B/C) - Loosened criteria
             entry_grade = 'C'
@@ -668,7 +874,14 @@ class MarketScanner:
                 'has_coppock': bool(has_coppock),
                 'has_ultimate': bool(has_ultimate),
                 'rsi': float(rsi_value) if pd.notna(rsi_value) else 50.0,
+                'prsi_bullish': bool(prsi_bullish),  # PSAR on RSI - is RSI trending up?
+                'atr': atr_value,
+                'atr_status': atr_status,  # OVERBOUGHT / OVERSOLD / NORMAL
+                'atr_pct': float(atr_pct_from_ema),  # % distance from EMA8
+                'ema8': float(ema8) if pd.notna(ema8) else current_price,
                 'signal_weight': int(signal_weight),
+                'signal_weight_buy': int(signal_weight_buy),
+                'signal_weight_sell': int(signal_weight_sell),
                 'day_change': float(day_change)
             }
         except Exception as e:
@@ -1353,6 +1566,12 @@ if __name__ == "__main__":
         from shorts_report import ShortsReport
         report = ShortsReport(results)
         report.send_email(additional_email=args.email)
+        
+        # Generate tracking sheet
+        filepath, filename = report.generate_tracking_sheet()
+        if filepath:
+            print(f"✓ Generated tracking sheet: {filename}")
+            print(f"  Upload to Google Sheets for GOOGLEFINANCE auto-updates")
     
     elif args.shortscan:
         # Full market scan for short candidates
@@ -1375,6 +1594,12 @@ if __name__ == "__main__":
         mc_val = args.mc if args.mc is not None else 10
         report = ShortsReport(results, mc_filter=mc_val, include_adr=args.adr)
         report.send_email(additional_email=args.email)
+        
+        # Generate tracking sheet
+        filepath, filename = report.generate_tracking_sheet()
+        if filepath:
+            print(f"✓ Generated tracking sheet: {filename}")
+            print(f"  Upload to Google Sheets for GOOGLEFINANCE auto-updates")
         
     else:
         # Full market scan

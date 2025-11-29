@@ -137,6 +137,11 @@ class PortfolioReport:
             return ""
     
     def get_covered_call_recommendation(self, ticker, current_price):
+        """
+        Get covered call recommendation.
+        Strike selection: max(8% above price, delta ~0.10 strike)
+        Whichever is FURTHER from current price.
+        """
         try:
             stock = yf.Ticker(ticker)
             expirations = stock.options
@@ -168,13 +173,48 @@ class PortfolioReport:
             if otm_calls.empty:
                 return None
             
-            target_calls = otm_calls[(otm_calls['strike'] >= current_price * 1.05) & 
-                                      (otm_calls['strike'] <= current_price * 1.10)]
-            best_call = target_calls.loc[target_calls['bid'].idxmax()] if not target_calls.empty else otm_calls.iloc[0]
+            dte = (datetime.strptime(best_exp, '%Y-%m-%d') - today).days
+            
+            # Strategy: max(8% above price, delta 0.10 strike)
+            # 8% above price
+            min_strike_8pct = current_price * 1.08
+            
+            # Delta 0.10 strike - typically ~15-20% OTM for 30-45 DTE
+            # Look for call with delta closest to 0.10 if available
+            if 'delta' in otm_calls.columns:
+                delta_10_calls = otm_calls[otm_calls['delta'].between(0.08, 0.15)]
+                if not delta_10_calls.empty:
+                    delta_10_strike = delta_10_calls.iloc[0]['strike']
+                else:
+                    # Estimate: delta 0.10 is roughly 15-20% OTM
+                    delta_10_strike = current_price * 1.15
+            else:
+                # No delta available, estimate
+                delta_10_strike = current_price * 1.15
+            
+            # Use whichever is FURTHER from current price
+            target_min_strike = max(min_strike_8pct, delta_10_strike)
+            
+            # Find calls at or above our target
+            target_calls = otm_calls[otm_calls['strike'] >= target_min_strike]
+            
+            if not target_calls.empty:
+                # Get the first one at or above target with decent bid
+                target_calls_with_bid = target_calls[target_calls['bid'] > 0]
+                if not target_calls_with_bid.empty:
+                    best_call = target_calls_with_bid.iloc[0]
+                else:
+                    best_call = target_calls.iloc[0]
+            else:
+                # Fallback to anything 5%+ OTM
+                fallback = otm_calls[otm_calls['strike'] >= current_price * 1.05]
+                if not fallback.empty:
+                    best_call = fallback.iloc[0]
+                else:
+                    best_call = otm_calls.iloc[0]
             
             strike, bid, ask = best_call['strike'], best_call['bid'], best_call['ask']
             mid_price = (bid + ask) / 2 if bid > 0 else ask
-            dte = (datetime.strptime(best_exp, '%Y-%m-%d') - today).days
             
             return {
                 'expiration': best_exp, 'strike': strike, 'mid_price': mid_price, 'dte': dte,
@@ -217,6 +257,52 @@ class PortfolioReport:
         """
         
         html += f"<h2>📊 {self.report_title} Report - {datetime.now().strftime('%Y-%m-%d %H:%M')}</h2>"
+        
+        # PUT/CALL RATIO SENTIMENT INDICATOR
+        try:
+            from market_scanner import get_market_put_call_ratio
+            pc_data = get_market_put_call_ratio()
+            
+            if pc_data:
+                pc_ratio = pc_data.get('pc_ratio_volume') or pc_data.get('pc_ratio_oi')
+                vix = pc_data.get('current_vix')
+                sentiment = pc_data.get('sentiment_trend')
+                warning = pc_data.get('warning')
+                warning_level = pc_data.get('warning_level')
+                
+                # Color based on warning level
+                if warning_level == 'DANGER':
+                    box_color = '#f8d7da'
+                    border_color = '#dc3545'
+                elif warning_level == 'CAUTION':
+                    box_color = '#fff3cd'
+                    border_color = '#ffc107'
+                elif warning_level in ['OPPORTUNITY', 'BULLISH']:
+                    box_color = '#d4edda'
+                    border_color = '#28a745'
+                else:
+                    box_color = '#e2e3e5'
+                    border_color = '#6c757d'
+                
+                # Sentiment trend icon
+                if sentiment == 'FEAR_RISING':
+                    trend_icon = '📈 Fear Rising'
+                    trend_note = '(VIX PSAR ↗️ - Caution)'
+                elif sentiment == 'FEAR_FALLING':
+                    trend_icon = '📉 Fear Falling'
+                    trend_note = '(VIX PSAR ↘️ - Bullish)'
+                else:
+                    trend_icon = '—'
+                    trend_note = ''
+                
+                html += f"""
+                <div style='background-color:{box_color}; border-left:4px solid {border_color}; padding:10px; margin:10px 0;'>
+                    <strong>🎯 Market Sentiment:</strong> P/C Ratio <strong>{pc_ratio:.2f}</strong> | VIX {vix:.1f} | {trend_icon} {trend_note}<br>
+                    <span style='font-size:12px;'>{warning}</span>
+                </div>
+                """
+        except Exception as e:
+            pass  # Skip if can't get P/C data
         
         # SUMMARY - different format for friends vs mystocks
         if self.is_friends_mode:
@@ -277,6 +363,29 @@ class PortfolioReport:
             html += f"<strong>⬆️ {len(improving)} positions improving (Momentum ≥6):</strong> "
             html += ", ".join([f"<strong>{r['ticker']}</strong> (M:{r['psar_momentum']})" 
                               for r in sorted(improving, key=lambda x: -x['psar_momentum'])[:8]])
+            html += "</div>"
+        
+        # 🔥 OVERBOUGHT ALERT - Stocks to sell or write covered calls on
+        overbought = [r for r in self.all_results if r.get('atr_status') == 'OVERBOUGHT']
+        if overbought:
+            overbought.sort(key=lambda x: -x.get('position_value', 0))
+            html += "<div class='alert-box' style='background-color:#fff3cd; border-left:4px solid #ffc107;'>"
+            html += f"<strong>🔥 {len(overbought)} positions OVERBOUGHT (consider covered calls or trimming):</strong> "
+            html += ", ".join([f"<strong>{r['ticker']}</strong>" for r in overbought[:10]])
+            if len(overbought) > 10:
+                html += f" +{len(overbought)-10} more"
+            html += "</div>"
+        
+        # ❄️ OVERSOLD ALERT - Good positions to add to
+        oversold = [r for r in self.all_results if r.get('atr_status') == 'OVERSOLD' 
+                   and r.get('psar_zone') in ['STRONG_BUY', 'BUY', 'NEUTRAL']]
+        if oversold:
+            oversold.sort(key=lambda x: -x.get('position_value', 0))
+            html += "<div class='alert-box' style='background-color:#d1ecf1; border-left:4px solid #17a2b8;'>"
+            html += f"<strong>❄️ {len(oversold)} positions OVERSOLD (good to add):</strong> "
+            html += ", ".join([f"<strong>{r['ticker']}</strong>" for r in oversold[:10]])
+            if len(oversold) > 10:
+                html += f" +{len(oversold)-10} more"
             html += "</div>"
         
         # CONCENTRATED POSITIONS - only for mystocks mode with position values
@@ -348,37 +457,61 @@ class PortfolioReport:
         
         html += """<hr><p style='font-size:10px;color:#7f8c8d;'>
         <strong>Momentum (1-10):</strong> Trajectory since signal start. 8-10=Strong, 4-7=Neutral, 1-3=Weak<br>
-        <strong>IR:</strong> MACD(30)+Ultimate(30)+Williams(20)+Bollinger(10)+Coppock(10)=Max 100
+        <strong>ATR:</strong> 🔥=Overbought (price > EMA8+ATR, consider selling/covered calls) | ❄️=Oversold (good to buy) | —=Normal<br>
+        <strong>PRSI:</strong> PSAR on RSI. ↗️=RSI trending up | ↘️=RSI trending down<br>
+        <strong>IR:</strong> MACD(35)+Ultimate(15)+Williams(15)+Bollinger(15)+Coppock(20)=Max 100
         </p></body></html>"""
         
         return html
     
+    def get_atr_display(self, result):
+        """Get ATR status display with % from EMA8"""
+        atr_status = result.get('atr_status', 'NORMAL')
+        atr_pct = result.get('atr_pct', 0)
+        if atr_status == 'OVERBOUGHT':
+            return f'🔥{atr_pct:+.0f}%'
+        elif atr_status == 'OVERSOLD':
+            return f'❄️{atr_pct:+.0f}%'
+        else:
+            return f'{atr_pct:+.0f}%'
+    
+    def get_prsi_display(self, result):
+        """Get PRSI (PSAR on RSI) display"""
+        prsi_bullish = result.get('prsi_bullish', True)
+        return '↗️' if prsi_bullish else '↘️'
+    
     def _build_table_with_value(self, stocks, zone_class):
         """Full table with Value column and Indicators"""
-        html = f"<table><tr><th class='th-{zone_class}'>Ticker</th><th class='th-{zone_class}'>Value</th><th class='th-{zone_class}'>Price</th><th class='th-{zone_class}'>PSAR%</th><th class='th-{zone_class}'>Mom</th><th class='th-{zone_class}'>OBV</th><th class='th-{zone_class}'>IR</th><th class='th-{zone_class}'>RSI</th><th class='th-{zone_class}'>Indicators</th></tr>"
+        html = f"<table><tr><th class='th-{zone_class}'>Ticker</th><th class='th-{zone_class}'>Value</th><th class='th-{zone_class}'>Price</th><th class='th-{zone_class}'>PSAR%</th><th class='th-{zone_class}'>Mom</th><th class='th-{zone_class}'>ATR</th><th class='th-{zone_class}'>PRSI</th><th class='th-{zone_class}'>OBV</th><th class='th-{zone_class}'>IR</th><th class='th-{zone_class}'>Indicators</th></tr>"
         for r in stocks:
             zone_color = self.get_zone_color(r.get('psar_zone', 'UNKNOWN'))
             obv_html = self.get_obv_display(r.get('obv_status', 'NEUTRAL'))
-            html += f"<tr><td><strong>{r['ticker']}</strong></td><td><strong>{self.format_value(r['position_value'])}</strong></td><td>${r['price']:.2f}</td><td style='color:{zone_color};font-weight:bold;'>{r['psar_distance']:+.1f}%</td><td>{self.get_momentum_display(r.get('psar_momentum', 5))}</td><td>{obv_html}</td><td>{r['signal_weight']}</td><td>{r['rsi']:.0f}</td><td style='font-size:10px;'>{self.get_indicator_symbols(r)}</td></tr>"
+            atr_html = self.get_atr_display(r)
+            prsi_html = self.get_prsi_display(r)
+            html += f"<tr><td><strong>{r['ticker']}</strong></td><td><strong>{self.format_value(r['position_value'])}</strong></td><td>${r['price']:.2f}</td><td style='color:{zone_color};font-weight:bold;'>{r['psar_distance']:+.1f}%</td><td>{self.get_momentum_display(r.get('psar_momentum', 5))}</td><td>{atr_html}</td><td>{prsi_html}</td><td>{obv_html}</td><td>{r['signal_weight']}</td><td style='font-size:10px;'>{self.get_indicator_symbols(r)}</td></tr>"
         return html + "</table>"
     
     def _build_zone_table(self, stocks, zone_class):
         """Table with Value column for mystocks mode"""
-        html = f"<table><tr><th class='th-{zone_class}'>Ticker</th><th class='th-{zone_class}'>Value</th><th class='th-{zone_class}'>Price</th><th class='th-{zone_class}'>PSAR%</th><th class='th-{zone_class}'>Mom</th><th class='th-{zone_class}'>OBV</th><th class='th-{zone_class}'>IR</th><th class='th-{zone_class}'>RSI</th></tr>"
+        html = f"<table><tr><th class='th-{zone_class}'>Ticker</th><th class='th-{zone_class}'>Value</th><th class='th-{zone_class}'>Price</th><th class='th-{zone_class}'>PSAR%</th><th class='th-{zone_class}'>Mom</th><th class='th-{zone_class}'>ATR</th><th class='th-{zone_class}'>PRSI</th><th class='th-{zone_class}'>OBV</th><th class='th-{zone_class}'>IR</th></tr>"
         for r in stocks:
             zone_color = self.get_zone_color(r.get('psar_zone', 'UNKNOWN'))
             val_str = self.format_value(r.get('position_value', 0))
             obv_html = self.get_obv_display(r.get('obv_status', 'NEUTRAL'))
-            html += f"<tr><td><strong>{r['ticker']}</strong></td><td>{val_str}</td><td>${r['price']:.2f}</td><td style='color:{zone_color};'>{r['psar_distance']:+.1f}%</td><td>{self.get_momentum_display(r.get('psar_momentum', 5))}</td><td>{obv_html}</td><td>{r['signal_weight']}</td><td>{r['rsi']:.0f}</td></tr>"
+            atr_html = self.get_atr_display(r)
+            prsi_html = self.get_prsi_display(r)
+            html += f"<tr><td><strong>{r['ticker']}</strong></td><td>{val_str}</td><td>${r['price']:.2f}</td><td style='color:{zone_color};'>{r['psar_distance']:+.1f}%</td><td>{self.get_momentum_display(r.get('psar_momentum', 5))}</td><td>{atr_html}</td><td>{prsi_html}</td><td>{obv_html}</td><td>{r['signal_weight']}</td></tr>"
         return html + "</table>"
     
     def _build_zone_table_no_value(self, stocks, zone_class):
         """Table without Value column for friends mode"""
-        html = f"<table><tr><th class='th-{zone_class}'>Ticker</th><th class='th-{zone_class}'>Price</th><th class='th-{zone_class}'>PSAR%</th><th class='th-{zone_class}'>Mom</th><th class='th-{zone_class}'>OBV</th><th class='th-{zone_class}'>IR</th><th class='th-{zone_class}'>RSI</th></tr>"
+        html = f"<table><tr><th class='th-{zone_class}'>Ticker</th><th class='th-{zone_class}'>Price</th><th class='th-{zone_class}'>PSAR%</th><th class='th-{zone_class}'>Mom</th><th class='th-{zone_class}'>ATR</th><th class='th-{zone_class}'>PRSI</th><th class='th-{zone_class}'>OBV</th><th class='th-{zone_class}'>IR</th></tr>"
         for r in stocks:
             zone_color = self.get_zone_color(r.get('psar_zone', 'UNKNOWN'))
             obv_html = self.get_obv_display(r.get('obv_status', 'NEUTRAL'))
-            html += f"<tr><td><strong>{r['ticker']}</strong></td><td>${r['price']:.2f}</td><td style='color:{zone_color};'>{r['psar_distance']:+.1f}%</td><td>{self.get_momentum_display(r.get('psar_momentum', 5))}</td><td>{obv_html}</td><td>{r['signal_weight']}</td><td>{r['rsi']:.0f}</td></tr>"
+            atr_html = self.get_atr_display(r)
+            prsi_html = self.get_prsi_display(r)
+            html += f"<tr><td><strong>{r['ticker']}</strong></td><td>${r['price']:.2f}</td><td style='color:{zone_color};'>{r['psar_distance']:+.1f}%</td><td>{self.get_momentum_display(r.get('psar_momentum', 5))}</td><td>{atr_html}</td><td>{prsi_html}</td><td>{obv_html}</td><td>{r['signal_weight']}</td></tr>"
         return html + "</table>"
     
     def send_email(self, additional_email=None, custom_title=None):

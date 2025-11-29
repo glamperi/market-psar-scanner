@@ -25,10 +25,10 @@ class ShortsReport:
         
         Strategy:
         - Buy deep ITM put (delta > 0.97) = minimal time premium, moves ~1:1 with stock
-        - To get delta 0.97+, need to be ~30-40% ITM
+        - Delta 0.97+ requires strike ~30-40% above current price
         - Optionally sell OTM put at support level to reduce cost (put debit spread)
         
-        Expiration: 30-45 days typically best for SELL signals
+        Expiration: 21-45 days for SELL signals
         """
         try:
             stock = yf.Ticker(ticker)
@@ -39,18 +39,18 @@ class ShortsReport:
             today = datetime.now()
             best_exp = None
             
-            # Look for 30-45 day expiration (optimal for SELL signal duration)
+            # Look for 21-45 day expiration 
             for exp_str in expirations:
                 dte = (datetime.strptime(exp_str, '%Y-%m-%d') - today).days
-                if 28 <= dte <= 50:
+                if 18 <= dte <= 50:
                     best_exp = exp_str
                     break
             
-            # Fallback to anything 21+ days
+            # Fallback to anything 14+ days
             if not best_exp:
                 for exp_str in expirations:
                     dte = (datetime.strptime(exp_str, '%Y-%m-%d') - today).days
-                    if dte >= 21:
+                    if dte >= 14:
                         best_exp = exp_str
                         break
             
@@ -63,61 +63,86 @@ class ShortsReport:
             
             dte = (datetime.strptime(best_exp, '%Y-%m-%d') - today).days
             
-            # Find deep ITM put (delta > 0.97)
-            # Delta 0.97+ requires ~30-40% ITM
-            target_strike_min = current_price * 1.30  # At least 30% ITM for high delta
-            target_strike_max = current_price * 1.50  # Up to 50% ITM
+            # ==========================================
+            # FIND DEEP ITM PUT (delta ~0.97)
+            # For puts, delta 0.97 means strike is ~30%+ above current price
+            # ==========================================
             
-            itm_puts = puts[puts['strike'] >= target_strike_min]
+            # Sort puts by strike DESCENDING (highest strike = deepest ITM)
+            puts_sorted = puts.sort_values('strike', ascending=False)
+            
+            # Filter to ITM puts only (strike > current price)
+            itm_puts = puts_sorted[puts_sorted['strike'] > current_price].copy()
             
             if itm_puts.empty:
-                # Try less deep ITM (25%+)
-                itm_puts = puts[puts['strike'] >= current_price * 1.25]
+                return None
             
-            if itm_puts.empty:
-                # Fallback to any ITM
-                itm_puts = puts[puts['strike'] > current_price]
-                if itm_puts.empty:
-                    return None
+            # Calculate ITM% for each put
+            itm_puts['itm_pct'] = ((itm_puts['strike'] - current_price) / current_price) * 100
             
-            # Get the put in our target range, or closest available
-            deep_itm = itm_puts[itm_puts['strike'] <= target_strike_max]
-            if deep_itm.empty:
-                deep_itm = itm_puts.head(3)  # Take deepest available
-            
-            # Select put with best liquidity (highest open interest or volume)
-            if 'openInterest' in deep_itm.columns and deep_itm['openInterest'].sum() > 0:
-                best_put = deep_itm.loc[deep_itm['openInterest'].fillna(0).idxmax()]
-            elif 'volume' in deep_itm.columns and deep_itm['volume'].sum() > 0:
-                best_put = deep_itm.loc[deep_itm['volume'].fillna(0).idxmax()]
+            # If delta is available, use it directly
+            if 'delta' in itm_puts.columns and itm_puts['delta'].notna().any():
+                # For puts, delta is negative, so look for delta <= -0.90
+                high_delta_puts = itm_puts[itm_puts['delta'].abs() >= 0.90]
+                if not high_delta_puts.empty:
+                    # Get the one closest to -0.97 with decent liquidity
+                    high_delta_puts = high_delta_puts.copy()
+                    high_delta_puts['delta_dist'] = abs(high_delta_puts['delta'].abs() - 0.97)
+                    best_put = high_delta_puts.loc[high_delta_puts['delta_dist'].idxmin()]
+                else:
+                    # No high delta puts available, get deepest ITM
+                    best_put = itm_puts.iloc[0]  # Highest strike (deepest ITM)
             else:
-                best_put = deep_itm.iloc[0]
+                # No delta data - use ITM% as proxy
+                # Target: 30%+ ITM for delta ~0.97
+                deep_itm = itm_puts[itm_puts['itm_pct'] >= 25]
+                
+                if not deep_itm.empty:
+                    # Get the one around 30-35% ITM with best liquidity
+                    target_itm = deep_itm[(deep_itm['itm_pct'] >= 28) & (deep_itm['itm_pct'] <= 40)]
+                    if not target_itm.empty:
+                        # Pick one with best bid
+                        best_put = target_itm.loc[target_itm['bid'].fillna(0).idxmax()]
+                    else:
+                        # Just get deepest available
+                        best_put = deep_itm.iloc[0]
+                else:
+                    # No deep ITM available - get deepest we can
+                    # But warn this won't have delta 0.97
+                    best_put = itm_puts.iloc[0]
             
             long_strike = best_put['strike']
-            long_bid = best_put['bid'] if best_put['bid'] > 0 else best_put['lastPrice']
-            long_ask = best_put['ask'] if best_put['ask'] > 0 else best_put['lastPrice']
+            long_bid = best_put['bid'] if best_put['bid'] > 0 else best_put.get('lastPrice', 0)
+            long_ask = best_put['ask'] if best_put['ask'] > 0 else best_put.get('lastPrice', 0)
             long_mid = (long_bid + long_ask) / 2 if long_bid > 0 else long_ask
+            
+            # Skip if no meaningful price
+            if long_mid <= 0:
+                return None
             
             # Calculate intrinsic vs extrinsic value
             intrinsic = max(0, long_strike - current_price)
             extrinsic = max(0, long_mid - intrinsic)
-            extrinsic_pct = (extrinsic / long_mid) * 100 if long_mid > 0 else 0
+            extrinsic_pct = (extrinsic / long_mid) * 100 if long_mid > 0 else 100
             
             # ITM percentage
             itm_pct = ((long_strike - current_price) / current_price) * 100
             
-            # Estimate delta based on ITM%
-            # Rough: 30% ITM ≈ 0.95 delta, 40% ITM ≈ 0.97, 50%+ ≈ 0.99
-            if itm_pct >= 50:
-                est_delta = 0.99
-            elif itm_pct >= 40:
-                est_delta = 0.97
-            elif itm_pct >= 30:
-                est_delta = 0.95
-            elif itm_pct >= 20:
-                est_delta = 0.90
+            # Get actual delta if available
+            if 'delta' in best_put.index and pd.notna(best_put.get('delta')):
+                est_delta = abs(best_put['delta'])
             else:
-                est_delta = 0.80
+                # Estimate delta based on ITM%
+                if itm_pct >= 40:
+                    est_delta = 0.98
+                elif itm_pct >= 30:
+                    est_delta = 0.95
+                elif itm_pct >= 20:
+                    est_delta = 0.88
+                elif itm_pct >= 10:
+                    est_delta = 0.75
+                else:
+                    est_delta = 0.60
             
             result = {
                 'expiration': best_exp,
@@ -133,25 +158,29 @@ class ShortsReport:
                 'est_delta': est_delta,
             }
             
-            # Find potential short put for spread (at support / safe level)
-            # Use 20-25% below current price for more cushion
-            short_target = current_price * 0.75  # 25% below current
-            short_min = current_price * 0.70     # Don't go below 30% OTM
+            # ==========================================
+            # FIND OTM PUT FOR SPREAD (optional)
+            # Target: 20-30% below current price
+            # ==========================================
+            short_target = current_price * 0.75  # 25% below
+            short_min = current_price * 0.65     # Don't go below 35% OTM
             
-            otm_puts = puts[(puts['strike'] < current_price * 0.85) & 
-                           (puts['strike'] >= short_min)]
+            otm_puts = puts_sorted[(puts_sorted['strike'] < current_price * 0.90) & 
+                                   (puts_sorted['strike'] >= short_min)]
             
             if not otm_puts.empty:
-                # Find put closest to our target (25% below)
+                # Find put closest to 25% below with decent bid
                 otm_puts = otm_puts.copy()
                 otm_puts['dist_to_target'] = abs(otm_puts['strike'] - short_target)
-                short_put = otm_puts.loc[otm_puts['dist_to_target'].idxmin()]
+                otm_with_bid = otm_puts[otm_puts['bid'] > 0]
                 
-                short_strike = short_put['strike']
-                short_bid = short_put['bid'] if short_put['bid'] > 0 else 0
-                short_mid = (short_put['bid'] + short_put['ask']) / 2 if short_put['bid'] > 0 else short_put['ask'] / 2
-                
-                if short_bid > 0:  # Only include if there's a bid
+                if not otm_with_bid.empty:
+                    short_put = otm_with_bid.loc[otm_with_bid['dist_to_target'].idxmin()]
+                    
+                    short_strike = short_put['strike']
+                    short_bid = short_put['bid']
+                    short_mid = (short_put['bid'] + short_put['ask']) / 2
+                    
                     result['short_strike'] = short_strike
                     result['short_mid'] = short_mid
                     result['short_bid'] = short_bid
@@ -171,15 +200,19 @@ class ShortsReport:
         Scoring (max 100):
         - Deep SELL zone (PSAR < -5%): +25
         - Below 50MA: +15
-        - Low momentum (1-4): +20
+        - Low momentum (1-4): +20 (still deteriorating - GOOD for shorts)
         - OBV confirms downtrend: +15
         - Negative EPS growth: +15
         - Short interest < 15%: +10 (not crowded)
+        - ATR Overbought: +15 (overextended - GOOD time to short!)
+        - PRSI bearish (RSI trending down): +10
         
         Penalties:
         - High short interest (>20%): -30 (squeeze risk)
-        - High momentum (7+): -20 (improving)
+        - High momentum (7+): -20 (improving - BAD for shorts)
         - RSI < 30: -15 (oversold bounce risk)
+        - ATR Oversold: -20 (bad time to short)
+        - PRSI bullish (RSI trending up): -10
         """
         score = 0
         warnings = []
@@ -202,12 +235,12 @@ class ShortsReport:
         else:
             warnings.append("Above 50MA")
         
-        # Momentum (low = still deteriorating = good for shorts)
+        # Momentum - for SHORTS: low momentum = good (still falling)
         momentum = result.get('psar_momentum', 5)
         if momentum <= 4:
-            score += 20  # Still getting worse
+            score += 20  # Still getting worse - GOOD for shorts
         elif momentum >= 7:
-            score -= 20  # Improving - could reverse
+            score -= 20  # Improving - BAD for shorts (could reverse)
             warnings.append(f"High momentum ({momentum})")
         
         # OBV for downtrend confirmation
@@ -244,6 +277,26 @@ class ShortsReport:
         if rsi < 30:
             score -= 15
             warnings.append(f"RSI oversold ({rsi:.0f})")
+        
+        # ==========================================
+        # NEW: ATR Overextended (THE SECRET SAUCE!)
+        # ==========================================
+        atr_status = result.get('atr_status', 'NORMAL')
+        if atr_status == 'OVERBOUGHT':
+            score += 15  # Overextended above EMA8+ATR = GOOD time to short
+        elif atr_status == 'OVERSOLD':
+            score -= 20  # Oversold below EMA8-ATR = BAD time to short
+            warnings.append("ATR oversold ❄️")
+        
+        # ==========================================
+        # NEW: PRSI (PSAR on RSI)
+        # ==========================================
+        prsi_bullish = result.get('prsi_bullish', True)
+        if not prsi_bullish:
+            score += 10  # RSI trending down = GOOD for shorts
+        else:
+            score -= 10  # RSI trending up = BAD for shorts
+            warnings.append("PRSI bullish")
         
         return max(0, min(100, score)), warnings
     
@@ -437,11 +490,12 @@ class ShortsReport:
                 <th>Price</th>
                 <th>PSAR %</th>
                 <th>Mom</th>
+                <th>ATR</th>
+                <th>PRSI</th>
                 <th>SI %</th>
                 <th>Squeeze</th>
                 <th>OBV</th>
                 <th>RSI</th>
-                <th>50MA</th>
                 <th>Warnings</th>
             </tr>
         """
@@ -463,12 +517,22 @@ class ShortsReport:
             si = r.get('short_percent')
             si_str = f"{si:.1f}%" if si else "N/A"
             
-            # Days to cover
-            days = r.get('short_ratio')
-            days_str = f"{days:.1f}" if days else ""
+            # ATR status display - show % from EMA8
+            atr_status = r.get('atr_status', 'NORMAL')
+            atr_pct = r.get('atr_pct', 0)
+            if atr_status == 'OVERBOUGHT':
+                atr_display = f'🔥 {atr_pct:+.1f}%'  # Good for shorts!
+            elif atr_status == 'OVERSOLD':
+                atr_display = f'❄️ {atr_pct:+.1f}%'  # Bad for shorts
+            else:
+                atr_display = f'{atr_pct:+.1f}%'  # Show % anyway
             
-            # 50MA
-            ma50 = '↓' if not r.get('above_ma50', True) else '↑'
+            # PRSI display (PSAR on RSI)
+            prsi_bullish = r.get('prsi_bullish', True)
+            if prsi_bullish:
+                prsi_display = '↗️'  # RSI trending up - bad for shorts
+            else:
+                prsi_display = '↘️'  # RSI trending down - good for shorts
             
             html += f"""
             <tr>
@@ -479,11 +543,12 @@ class ShortsReport:
                 <td>${r.get('price', 0):.2f}</td>
                 <td>{r.get('psar_distance', 0):+.1f}%</td>
                 <td>{r.get('psar_momentum', 5)}</td>
+                <td>{atr_display}</td>
+                <td>{prsi_display}</td>
                 <td>{si_str}</td>
                 <td>{squeeze_icon}</td>
                 <td>{obv_display}</td>
                 <td>{r.get('rsi', 50):.0f}</td>
-                <td>{ma50}</td>
                 <td style="font-size: 11px;">{', '.join(warnings) if warnings else '✓'}</td>
             </tr>
             """
@@ -591,6 +656,37 @@ class ShortsReport:
         """
         
         return html
+    
+    def generate_tracking_sheet(self, output_dir=None):
+        """Generate Google Sheets CSV for tracking shorts"""
+        from shorts_sheet import generate_shorts_sheet
+        
+        # Ensure scores are calculated (in case this is called before build_email_body)
+        for r in self.all_results:
+            if 'short_score' not in r:
+                score, warnings = self.get_short_score(r)
+                r['short_score'] = score
+                r['short_warnings'] = warnings
+        
+        # Enrich results with put data
+        for r in self.all_results:
+            if r.get('price', 0) > 0 and r.get('short_score', 0) >= 40:
+                put = self.get_put_recommendation(
+                    r['ticker'], 
+                    r['price'],
+                    r.get('psar_distance', 0)
+                )
+                if put:
+                    r['put_recommendation'] = put
+        
+        # Only include good candidates (score >= 40, in SELL zone)
+        good_shorts = [r for r in self.all_results 
+                       if r.get('short_score', 0) >= 40 and not r.get('psar_bullish', True)]
+        
+        if good_shorts:
+            filepath, filename = generate_shorts_sheet(good_shorts, output_dir)
+            return filepath, filename
+        return None, None
     
     def send_email(self, additional_email=None):
         """Send the shorts report via email"""

@@ -1,0 +1,16 @@
+Symbol,ShortPercent,DaysToCover
+# Manual short interest data for OTC stocks
+# Get data from Benzinga, Fintel, or OTC Markets
+# ShortPercent = % of float shorted (e.g., 2.6 means 2.6%)
+# DaysToCover = short ratio (days to cover all shorts at avg volume)
+#
+# Example sources:
+# - https://www.benzinga.com/quote/MTPLF/short-interest
+# - https://fintel.io/ss/us/mtplf
+# - https://www.otcmarkets.com/stock/MTPLF/security
+#
+# Calculate: ShortPercent = (Short Shares / Float) * 100
+# MTPLF: 27.6M short shares / 1.05B float = 2.6%
+#
+MTPLF,2.6,3.21
+# TSWCF - need to look up manually (UK company, harder to find data)
