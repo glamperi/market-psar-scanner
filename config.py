@@ -1,6 +1,6 @@
-# config.py
 import os
 import pandas as pd
+import warnings
 
 # =============================================================================
 # DATA CONFIGURATION
@@ -54,20 +54,80 @@ EMAIL_CONFIG = {
 }
 
 # =============================================================================
+# ROBUST FILE LOADER
+# =============================================================================
+
+def load_stock_file(path):
+    """
+    Robustly load a stock file, handling CSVs with different encodings
+    AND Excel files masquerading as CSVs (0xd0 error).
+    """
+    if not os.path.exists(path):
+        return None
+
+    # 1. Try reading as a standard CSV (UTF-8)
+    try:
+        return pd.read_csv(path, encoding='utf-8')
+    except (UnicodeDecodeError, pd.errors.ParserError):
+        pass
+
+    # 2. Try reading as Windows encoded CSV (Common for Excel-saved CSVs)
+    try:
+        return pd.read_csv(path, encoding='cp1252')
+    except (UnicodeDecodeError, pd.errors.ParserError):
+        pass
+
+    # 3. Try reading as an Excel file (Fix for 0xd0 error / binary files)
+    # Even if named .csv, it might be an .xls or .xlsx
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            return pd.read_excel(path)
+    except Exception:
+        pass
+        
+    print(f"  ✗ Could not read file format: {os.path.basename(path)}")
+    return None
+
+def get_column_data(df, file_type='Generic'):
+    """Extract tickers from a dataframe regardless of column names."""
+    if df is None or df.empty:
+        return []
+    
+    # List of possible column names for the ticker symbol
+    possible_names = ['Symbol', 'Ticker', 'Stock', 'Company Symbol']
+    
+    col_name = None
+    for name in possible_names:
+        if name in df.columns:
+            col_name = name
+            break
+            
+    # Fallback: Use the first column if no known name matches
+    if col_name is None:
+        col_name = df.columns[0]
+        
+    # Clean data: drop NAs, convert to string, strip whitespace
+    tickers = df[col_name].dropna().astype(str).str.strip().tolist()
+    
+    # Filter out garbage (headers repeated, empty strings)
+    valid_tickers = [t for t in tickers if t and t.upper() not in possible_names and len(t) < 10]
+    
+    return valid_tickers
+
+# =============================================================================
 # TICKER LIST MANAGEMENT
 # =============================================================================
 
 def get_all_tickers():
-    """Fetches all stock tickers from CSV files located in the script directory."""
+    """Fetches all stock tickers from files located in the script directory."""
     all_tickers = set()
     ticker_sources = {}
-    ibd_stats = {}  # NEW: Store IBD ratings and stats
 
     # Get the directory where this script (config.py) is located
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     
     # 1. Broad Market Indices
-    # Dictionary mapping Source Name -> Filename
     market_files = {
         'S&P 500': 'sp500_tickers.csv',
         'NASDAQ 100': 'nasdaq100_tickers.csv',
@@ -77,37 +137,20 @@ def get_all_tickers():
     print("Loading market tickers...")
     for source, filename in market_files.items():
         csv_path = os.path.join(BASE_DIR, filename)
-        if os.path.exists(csv_path):
-            try:
-                # specific handling for Russell 2000 which usually has a 'Ticker' column
-                # others might have 'Symbol'
-                df = pd.read_csv(csv_path)
-                
-                # Determine which column holds the ticker
-                col_name = 'Symbol'
-                if 'Ticker' in df.columns:
-                    col_name = 'Ticker'
-                elif 'Symbol' not in df.columns:
-                    # Fallback: grab the first column
-                    col_name = df.columns[0]
-
-                tickers = df[col_name].dropna().astype(str).tolist()
-                
-                # Clean tickers (remove whitespace)
-                tickers = [t.strip() for t in tickers if t.strip()]
-                
-                all_tickers.update(tickers)
-                print(f"  [OK] Got {len(tickers)} {source} tickers from {filename}")
-                
-                for t in tickers:
-                    ticker_sources.setdefault(t, []).append(source)
-            except Exception as e:
-                print(f"  [FAIL] Failed to read {filename}: {e}")
+        df = load_stock_file(csv_path)
+        
+        if df is not None:
+            tickers = get_column_data(df, source)
+            all_tickers.update(tickers)
+            print(f"  ✓ Got {len(tickers)} {source} tickers from {filename}")
+            
+            for t in tickers:
+                ticker_sources.setdefault(t, []).append(source)
         else:
             # Only warn if it's not the standard indices (optional)
             pass
 
-    # 2. IBD Lists (with enhanced stats)
+    # 2. IBD Lists
     ibd_list_names = ['ibd_50', 'ibd_bigcap20', 'ibd_ipo', 'ibd_spotlight', 'ibd_sector']
     
     print("Checking for IBD CSV files...")
@@ -115,49 +158,17 @@ def get_all_tickers():
         filename = f"{list_name}.csv"
         csv_path = os.path.join(BASE_DIR, filename)
         
-        if os.path.exists(csv_path):
-            try:
-                df = pd.read_csv(csv_path)
-                
-                # Assume 'Symbol' is the column name
-                col_name = 'Symbol' if 'Symbol' in df.columns else df.columns[0]
-                
-                tickers = df[col_name].dropna().astype(str).tolist()
-                tickers = [t.strip() for t in tickers if t.strip()]
-                
-                all_tickers.update(tickers)
-                print(f"  [OK] Found {filename} ({len(tickers)} stocks)")
-                
-                source_name = list_name.replace('ibd_', '').upper()
-                
-                # Extract IBD stats for each ticker
-                for idx, row in df.iterrows():
-                    ticker = str(row.get(col_name, '')).strip()
-                    if not ticker:
-                        continue
-                    
-                    # Store all IBD stats
-                    ibd_stats[ticker] = {
-                        'Company': row.get('Company', 'N/A'),
-                        'Composite': row.get('Composite', 'N/A'),
-                        'EPS': row.get('EPS', 'N/A'),
-                        'RS': row.get('RS', 'N/A'),
-                        'GroupRS': row.get('GroupRS', 'N/A'),
-                        'SMR': row.get('SMR', 'N/A'),
-                        'AccDis': row.get('AccDis', 'N/A'),
-                        'OffHigh': row.get('OffHigh', 'N/A'),
-                        'Price_IBD': row.get('Price', 'N/A'),
-                        'Day50': row.get('Day50', 'N/A'),
-                        'Vol': row.get('Vol', 'N/A'),
-                        'BuyPoint': row.get('BuyPoint', 'N/A'),  # If you add this column
-                        'Comment': row.get('Comment', ''),        # If you add this column
-                        'IBD_List': f"IBD {source_name}"
-                    }
-                    
-                    ticker_sources.setdefault(ticker, []).append(f"IBD {source_name}")
-                    
-            except Exception as e:
-                print(f"  [FAIL] Failed to read {filename}: {e}")
+        # Use the robust loader to handle the 0xd0/binary error
+        df = load_stock_file(csv_path)
+        
+        if df is not None:
+            tickers = get_column_data(df, list_name)
+            all_tickers.update(tickers)
+            print(f"  ✓ Found {filename} ({len(tickers)} stocks)")
+            
+            source_name = list_name.replace('ibd_', '').upper()
+            for t in tickers:
+                ticker_sources.setdefault(t, []).append(f"IBD {source_name}")
 
     # 3. Add Crypto and Indices (Hardcoded)
     crypto_indices = ['BTC-USD', 'ETH-USD', '^GSPC', '^NDX', '^RUT']
@@ -167,33 +178,8 @@ def get_all_tickers():
         ticker_sources.setdefault(t, []).append('Crypto/Index')
     
     # Final Cleanup
-    # Remove any None, empty strings, or headers that got sneaking in
     all_tickers.discard(None)
     all_tickers.discard('')
-    all_tickers.discard('Symbol')
-    all_tickers.discard('Ticker')
     
-    print(f"\n✓ Loaded {len(ibd_stats)} stocks with IBD stats")
-    
-    return list(all_tickers), ticker_sources, ibd_stats
-
-# ============================================
-# NEW SETTINGS FOR UPDATED SCANNER
-# ============================================
-
-# Custom watchlist
-CUSTOM_WATCHLIST_PATH = 'custom_watchlist.txt'
-
-# Table limits for email report
-TABLE_LIMIT_PSAR = 50
-TABLE_LIMIT_EARLY = 50
-TABLE_LIMIT_DIVIDEND = 50
-TABLE_LIMIT_EXITS = None  # No limit on exits - show all
-
-# Dividend filters
-MIN_DIVIDEND_YIELD = 1.5  # Minimum 1.5% yield to show in dividend table
-
-# Use live ticker lists (fallback to CSV if fails)
-USE_LIVE_TICKER_LISTS = True
-
-
+    # FIX: Return EXACTLY 2 values to match market_scanner.py expectation
+    return list(all_tickers), ticker_sources
