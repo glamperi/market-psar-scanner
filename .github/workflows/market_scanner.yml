@@ -62,10 +62,10 @@ jobs:
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
-    
-    - name: Install dependencies
-      run: |
-        pip install yfinance pandas ta
+
+    - name: Install Dependencies
+        # THIS IS THE CRITICAL MISSING STEP!
+        run: pip install -r requirements.txt
     
     - name: Run Scanner
       env:
