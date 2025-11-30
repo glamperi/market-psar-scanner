@@ -17,186 +17,126 @@ class EmailReport:
         return ticker
 
     def generate_html(self):
-        """Generate the HTML content for the email"""
+        """Generate the HTML content with original styling"""
+        
+        # Original CSS Styling
+        style = """
+        <style>
+            body { font-family: Arial, sans-serif; color: #333; }
+            h2 { color: #2c3e50; border-bottom: 2px solid #eee; padding-bottom: 10px; }
+            h3 { color: #34495e; margin-top: 20px; }
+            table { border-collapse: collapse; width: 100%; margin-bottom: 20px; font-size: 14px; }
+            th { background-color: #f8f9fa; border: 1px solid #ddd; padding: 8px; text-align: left; }
+            td { border: 1px solid #ddd; padding: 8px; }
+            tr:nth-child(even) { background-color: #f9f9f9; }
+            .up { color: green; font-weight: bold; }
+            .down { color: red; font-weight: bold; }
+            .alert-box { background-color: #f8d7da; border: 1px solid #f5c6cb; padding: 15px; border-radius: 5px; color: #721c24; }
+        </style>
+        """
+
         html = f"""
         <html>
-        <body style="font-family: Arial, sans-serif;">
+        <head>{style}</head>
+        <body>
             <h2>📊 Market-Wide PSAR Scanner Report</h2>
-            <h3>Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</h3>
-            <hr>
+            <p><strong>Date:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
         """
         
-        # 1. Recent Exits (7-day history)
+        # 1. Recent Exits
         if self.changes.get('recent_exits_7day'):
             html += """
-            <div style="background-color: #FFE0E0; border: 3px solid #FF0000; padding: 15px; margin: 10px 0;">
-                <h2 style="color: red;">⚠️ RECENT EXITS: Stocks That Left PSAR Buy in Last 7 Days ⚠️</h2>
-                <p style="color: #8B0000;"><strong>Don't miss these sell signals! Check if you own any of these stocks.</strong></p>
-                <table border="1" cellpadding="5" style="border-collapse: collapse; width: 100%;">
-                    <tr style="background-color: #FFB6C1;">
-                        <th>Ticker</th><th>Company</th><th>Exited</th><th>Exit Price</th><th>Current Price</th><th>Change Since Exit</th><th>Distance to PSAR</th><th>Day Chg %</th><th>RSI</th>
+            <div class="alert-box">
+                <h3>⚠️ RECENT EXITS (Last 7 Days)</h3>
+                <table>
+                    <tr style="background-color: #eebbba;">
+                        <th>Ticker</th><th>Company</th><th>When</th><th>Exit Price</th><th>Current</th><th>Change</th>
                     </tr>
             """
             for pos in self.changes['recent_exits_7day']:
-                ticker_display = self.format_ticker(pos['Ticker'], pos.get('Source', ''))
+                display_ticker = self.format_ticker(pos['Ticker'], pos.get('Source'))
+                days = pos.get('days_ago', 0)
+                when = f"{days} days ago" if days > 0 else "Today"
                 
-                days_ago = pos.get('days_ago', 0)
-                hours_ago = pos.get('hours_ago', 0)
-                time_str = "Just now"
-                if days_ago == 1: time_str = "Yesterday"
-                elif days_ago > 1: time_str = f"{days_ago} days ago"
-                elif hours_ago > 0: time_str = f"{hours_ago}h ago"
-                
-                exit_price = pos.get('exit_price', pos['Price'])
-                change_since = ((pos['Price'] - exit_price) / exit_price * 100) if exit_price else 0
-                
+                exit_p = pos.get('exit_price', 0)
+                curr_p = pos.get('Price', 0)
+                drop = ((curr_p - exit_p) / exit_p * 100) if exit_p else 0
+                drop_cls = "up" if drop > 0 else "down"
+
                 html += f"""
                 <tr>
-                    <td><strong>{ticker_display}</strong></td>
-                    <td>{pos.get('Company', 'N/A')[:25]}</td>
-                    <td><strong style="color: #8B0000;">{time_str}</strong></td>
-                    <td>${exit_price:.2f}</td>
-                    <td>${pos['Price']:.2f}</td>
-                    <td style="color: {'green' if change_since > 0 else 'red'};">{change_since:+.2f}%</td>
-                    <td style="color: red;">{pos.get('Distance %', 0):.2f}%</td>
-                    <td style="color: {'green' if pos.get('Day Change %', 0) > 0 else 'red'};">{pos.get('Day Change %', 0):+.2f}%</td>
-                    <td>{pos.get('RSI', 'N/A')}</td>
+                    <td><strong>{display_ticker}</strong></td>
+                    <td>{pos.get('Company', 'N/A')[:20]}</td>
+                    <td>{when}</td>
+                    <td>${exit_p:.2f}</td>
+                    <td>${curr_p:.2f}</td>
+                    <td class="{drop_cls}">{drop:+.2f}%</td>
                 </tr>
                 """
-            html += "</table></div><hr>"
+            html += "</table></div>"
 
-        # 2. New Exits (Immediate)
-        if self.changes.get('new_exits'):
-            html += """
-            <div style="background-color: #FFE0E0; border: 3px solid #FF0000; padding: 15px; margin: 10px 0;">
-                <h2 style="color: red;">⚠️ WARNING: The Following Went from PSAR Buy to Sell Recently! ⚠️</h2>
-                <table border="1" cellpadding="5" style="border-collapse: collapse;">
-                    <tr style="background-color: #FFB6C1;">
-                        <th>Ticker</th><th>Company</th><th>Source</th><th>Price</th><th>Distance %</th><th>Day Chg %</th>
-                    </tr>
-            """
-            for pos in self.changes['new_exits']:
-                ticker_display = self.format_ticker(pos['Ticker'], pos.get('Source', ''))
-                html += f"""
-                <tr>
-                    <td><strong>{ticker_display}</strong></td>
-                    <td>{pos.get('Company', 'N/A')[:30]}</td>
-                    <td><small>{pos.get('Source', 'N/A')[:20]}</small></td>
-                    <td>${pos['Price']}</td>
-                    <td>{pos.get('Distance %', 0)}%</td>
-                    <td style="color: {'green' if pos.get('Day Change %', 0) > 0 else 'red'};">{pos.get('Day Change %', 0):+.2f}%</td>
-                </tr>
-                """
-            html += "</table></div><hr>"
-
-        # 3. New Entries
+        # 2. New Entries
         if self.changes.get('new_entries'):
             html += """
-            <h2>🚨 NEW POSITION CHANGES</h2>
-            <h3 style="color: green;">🟢 NEW BUY SIGNALS (Recently Entered PSAR Buy)</h3>
-            <table border="1" cellpadding="5" style="border-collapse: collapse;">
-                <tr style="background-color: #90EE90;">
-                    <th>Ticker</th><th>Company</th><th>Source</th><th>Price</th><th>Dist %</th><th>Day %</th><th>Wt</th><th>MACD</th><th>BB</th><th>WillR</th><th>Cop</th><th>Ult</th><th>RSI</th>
+            <h3 style="color: green;">🟢 NEW BUY SIGNALS (Entered Today)</h3>
+            <table>
+                <tr style="background-color: #c3e6cb;">
+                    <th>Ticker</th><th>Company</th><th>Price</th><th>Day %</th><th>Score</th><th>Why?</th>
                 </tr>
             """
             sorted_entries = sorted(self.changes['new_entries'], key=lambda x: x.get('signal_weight', 0), reverse=True)
             for pos in sorted_entries:
-                ticker_display = self.format_ticker(pos['Ticker'], pos.get('Source', ''))
+                display_ticker = self.format_ticker(pos['Ticker'], pos.get('Source'))
+                day_cls = "up" if pos.get('Day Change %', 0) > 0 else "down"
+                
+                indicators = []
+                if pos.get('MACD_Buy'): indicators.append("MACD")
+                if pos.get('BB_Buy'): indicators.append("BB")
+                
                 html += f"""
                 <tr>
-                    <td><strong>{ticker_display}</strong></td>
-                    <td>{pos.get('Company', 'N/A')[:25]}</td>
-                    <td><small>{pos.get('Source', 'N/A')[:15]}</small></td>
-                    <td>${pos['Price']}</td>
-                    <td>{pos.get('Distance %', 0)}%</td>
-                    <td style="color: {'green' if pos.get('Day Change %', 0) > 0 else 'red'};">{pos.get('Day Change %', 0):+.2f}%</td>
+                    <td><strong>{display_ticker}</strong></td>
+                    <td>{pos.get('Company', 'N/A')[:20]}</td>
+                    <td>${pos['Price']:.2f}</td>
+                    <td class="{day_cls}">{pos.get('Day Change %', 0):+.2f}%</td>
                     <td><strong>{pos.get('signal_weight', 0)}</strong></td>
-                    <td>{'✓' if pos.get('MACD_Buy') else ''}</td>
-                    <td>{'✓' if pos.get('BB_Buy') else ''}</td>
-                    <td>{'✓' if pos.get('WillR_Buy') else ''}</td>
-                    <td>{'✓' if pos.get('Coppock_Buy') else ''}</td>
-                    <td>{'✓' if pos.get('Ultimate_Buy') else ''}</td>
-                    <td>{pos.get('RSI', 'N/A')}</td>
+                    <td>{', '.join(indicators)}</td>
                 </tr>
                 """
-            html += "</table><br><hr>"
+            html += "</table>"
 
-        # 4. Summary Stats
-        html += f"""
-        <h2>📈 Summary Statistics</h2>
-        <table border="1" cellpadding="8" style="border-collapse: collapse;">
-            <tr><td style="background-color: #90EE90;"><strong>🟢 Confirmed Buy Signals</strong></td><td><strong>{len(self.all_buys)}</strong></td></tr>
-            <tr><td style="background-color: #FFFF99;"><strong>🟡 Early Buy Signals</strong></td><td><strong>{len(self.all_early)}</strong></td></tr>
-            <tr><td><strong>🚨 New Entries</strong></td><td><strong>{len(self.changes.get('new_entries', []))}</strong></td></tr>
-            <tr><td><strong>⚠️ New Exits</strong></td><td><strong>{len(self.changes.get('new_exits', []))}</strong></td></tr>
-        </table><br>
-        """
-
-        # 5. Top 50 Current Buys
+        # 3. Top Current Buys
         if self.all_buys:
-            top_buys = sorted(self.all_buys, key=lambda x: x.get('Distance %', 0), reverse=True)[:50]
             html += """
-            <h3>🟢 CURRENT BUY SIGNALS (Top 50 by Distance)</h3>
-            <table border="1" cellpadding="5" style="border-collapse: collapse;">
-                <tr style="background-color: #E0FFE0;">
-                    <th>Ticker</th><th>Company</th><th>Source</th><th>Price</th><th>Dist %</th><th>Day %</th><th>MACD</th><th>BB</th><th>Cop</th><th>Ult</th><th>RSI</th>
+            <h3>🚀 TOP CURRENT BUYS</h3>
+            <table>
+                <tr>
+                    <th>Ticker</th><th>Company</th><th>Source</th><th>Price</th><th>Dist %</th><th>Day %</th>
                 </tr>
             """
+            top_buys = sorted(self.all_buys, key=lambda x: x.get('Distance %', 0), reverse=True)[:30]
             for pos in top_buys:
-                ticker_display = self.format_ticker(pos['Ticker'], pos.get('Source', ''))
+                display_ticker = self.format_ticker(pos['Ticker'], pos.get('Source'))
+                day_cls = "up" if pos.get('Day Change %', 0) > 0 else "down"
+                
                 html += f"""
                 <tr>
-                    <td><strong>{ticker_display}</strong></td>
-                    <td>{pos.get('Company', 'N/A')[:25]}</td>
-                    <td><small>{pos.get('Source', 'N/A')[:15]}</small></td>
-                    <td>${pos['Price']}</td>
+                    <td><strong>{display_ticker}</strong></td>
+                    <td>{pos.get('Company', 'N/A')[:20]}</td>
+                    <td>{pos.get('Source', 'N/A')[:15]}</td>
+                    <td>${pos['Price']:.2f}</td>
                     <td>{pos.get('Distance %', 0)}%</td>
-                    <td style="color: {'green' if pos.get('Day Change %', 0) > 0 else 'red'};">{pos.get('Day Change %', 0):+.2f}%</td>
-                    <td>{'✓' if pos.get('MACD_Buy') else ''}</td>
-                    <td>{'✓' if pos.get('BB_Buy') else ''}</td>
-                    <td>{'✓' if pos.get('Coppock_Buy') else ''}</td>
-                    <td>{'✓' if pos.get('Ultimate_Buy') else ''}</td>
-                    <td>{pos.get('RSI', 'N/A')}</td>
+                    <td class="{day_cls}">{pos.get('Day Change %', 0):+.2f}%</td>
                 </tr>
                 """
-            html += "</table><br>"
-
-        # 6. Top 30 Early Signals
-        if self.all_early:
-            top_early = sorted(self.all_early, key=lambda x: x.get('signal_weight', 0), reverse=True)[:30]
-            html += """
-            <h3>🟡 EARLY BUY SIGNALS (Top 30 by Weight)</h3>
-            <table border="1" cellpadding="5" style="border-collapse: collapse;">
-                <tr style="background-color: #FFFFE0;">
-                    <th>Ticker</th><th>Company</th><th>Source</th><th>Price</th><th>Day %</th><th>Wt</th><th>MACD</th><th>BB</th><th>WillR</th><th>Cop</th><th>Ult</th><th>RSI</th>
-                </tr>
-            """
-            for pos in top_early:
-                ticker_display = self.format_ticker(pos['Ticker'], pos.get('Source', ''))
-                html += f"""
-                <tr>
-                    <td><strong>{ticker_display}</strong></td>
-                    <td>{pos.get('Company', 'N/A')[:25]}</td>
-                    <td><small>{pos.get('Source', 'N/A')[:15]}</small></td>
-                    <td>${pos['Price']}</td>
-                    <td style="color: {'green' if pos.get('Day Change %', 0) > 0 else 'red'};">{pos.get('Day Change %', 0):+.2f}%</td>
-                    <td><strong>{pos.get('signal_weight', 0)}</strong></td>
-                    <td>{'✓' if pos.get('MACD_Buy') else ''}</td>
-                    <td>{'✓' if pos.get('BB_Buy') else ''}</td>
-                    <td>{'✓' if pos.get('WillR_Buy') else ''}</td>
-                    <td>{'✓' if pos.get('Coppock_Buy') else ''}</td>
-                    <td>{'✓' if pos.get('Ultimate_Buy') else ''}</td>
-                    <td>{pos.get('RSI', 'N/A')}</td>
-                </tr>
-                """
-            html += "</table><br>"
+            html += "</table>"
 
         html += "</body></html>"
         return html
 
     def send_email(self, subject):
         try:
-            print(f"Attempting to send email to {EMAIL_CONFIG['recipient_email']}...")
+            print(f"Sending email to {EMAIL_CONFIG['recipient_email']}...")
             msg = MIMEMultipart()
             msg['From'] = EMAIL_CONFIG['sender_email']
             msg['To'] = EMAIL_CONFIG['recipient_email']
@@ -210,7 +150,7 @@ class EmailReport:
             server.login(EMAIL_CONFIG['sender_email'], EMAIL_CONFIG['sender_password'])
             server.send_message(msg)
             server.quit()
-            print(f"✓ Email sent successfully: {subject}")
+            print(f"✓ Email sent successfully.")
             return True
         except Exception as e:
             print(f"✗ Email failed: {e}")
