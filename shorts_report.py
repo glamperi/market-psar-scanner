@@ -10,6 +10,7 @@ from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
 import os
 import yfinance as yf
+from cboe import get_cboe_ratios_and_analyze
 
 class ShortsReport:
     def __init__(self, scan_results, mc_filter=None, include_adr=False):
@@ -360,6 +361,27 @@ class ShortsReport:
         </head>
         <body>
         """
+
+
+        # --- MARKET SENTIMENT INDICATOR (New Cboe logic) ---
+        try:
+            # The function handles scraping and returns a formatted string
+            from cboe import get_cboe_ratios_and_analyze
+            pc_analysis_text = get_cboe_ratios_and_analyze()
+            
+            # Format the pre-formatted text into an aesthetically pleasing HTML block
+            if pc_analysis_text:
+                pc_html = pc_analysis_text.replace('\n', '<br>')
+                html += f"""
+                <div class="section" style="background-color: #ecf0f1; padding: 15px; margin: 15px 0; border-radius: 5px;">
+                    {pc_html}
+                </div>
+                """
+        except Exception as e:
+            # Silently fail if Cboe scraping encounters an issue or is missing
+            html += f"<p style='color:#e74c3c;'>⚠️ Failed to load Cboe Market Sentiment: {type(e).__name__}</p>"
+            pass
+        # ----------------------------------------------------
         
         # Header
         if self.is_market_scan:
@@ -477,6 +499,9 @@ class ShortsReport:
         """
         
         return html
+
+
+    
     
     def _build_shorts_table(self, results):
         """Build HTML table for short candidates"""

@@ -9,7 +9,7 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
-
+from cboe import get_cboe_ratios_and_analyze
 EXIT_HISTORY_FILE = 'exit_history.json'
 
 class EmailReport:
@@ -161,57 +161,26 @@ class EmailReport:
         
         html += f"<p style='color:#7f8c8d; font-size:11px;'>Scanned ~2,500 stocks from S&P 500, NASDAQ 100, Russell 2000, IBD | Filtered: {filter_desc} | {len(self.all_results)} stocks passed</p>"
         
-        # PUT/CALL RATIO SENTIMENT INDICATOR
+       # MARKET SENTIMENT INDICATOR (New Cboe logic)
         try:
-            from market_scanner import get_market_put_call_ratio
-            pc_data = get_market_put_call_ratio()
+            # The function handles scraping and returns a formatted string
+            pc_analysis_text = get_cboe_ratios_and_analyze()
             
-            if pc_data:
-                pc_ratio = pc_data.get('pc_ratio')
-                pc_date = pc_data.get('pc_date', '')
-                warning = pc_data.get('warning')
-                warning_level = pc_data.get('warning_level')
-                psar_note = pc_data.get('psar_note', '')
-                pc_psar_bullish = pc_data.get('pc_psar_bullish')
-                
-                # Color based on warning level
-                if warning_level == 'DANGER':
-                    box_color = '#f8d7da'
-                    border_color = '#dc3545'
-                elif warning_level == 'CAUTION':
-                    box_color = '#fff3cd'
-                    border_color = '#ffc107'
-                elif warning_level in ['OPPORTUNITY', 'BULLISH']:
-                    box_color = '#d4edda'
-                    border_color = '#28a745'
-                else:
-                    box_color = '#e2e3e5'
-                    border_color = '#6c757d'
-                
+            # Format the pre-formatted text into an aesthetically pleasing HTML block
+            if pc_analysis_text:
+                pc_html = pc_analysis_text.replace('\n', '<br>')
                 html += f"""
-                <div style='background-color:{box_color}; border-left:4px solid {border_color}; padding:12px; margin:10px 0;'>
-                    <strong>🎯 MARKET SENTIMENT (CBOE Equity Put/Call Ratio)</strong><br>
-                    <table style='width:auto; margin-top:8px; border:none;'>
-                        <tr>
-                            <td style='border:none;'><strong>P/C Ratio:</strong></td>
-                            <td style='border:none;'><strong>{pc_ratio:.2f}</strong></td>
-                            <td style='border:none; padding-left:20px;'><strong>Date:</strong></td>
-                            <td style='border:none;'>{pc_date}</td>
-                        </tr>
-                        <tr>
-                            <td style='border:none;'><strong>PSAR Trend:</strong></td>
-                            <td style='border:none;' colspan='3'>{psar_note}</td>
-                        </tr>
-                    </table>
-                    <p style='margin:8px 0 0 0; font-weight:bold;'>{warning}</p>
-                    <p style='font-size:10px; color:#666; margin:5px 0 0 0;'>
-                        &lt;0.50=extreme complacency (TOP) | 0.50-0.60=caution | 0.60-0.90=normal | &gt;0.90=fear (BUY) | &gt;1.0=extreme fear (BOTTOM)
-                    </p>
+                <div class="section" style="background-color: #ecf0f1; padding: 15px; margin: 15px 0; border-radius: 5px;">
+                    {pc_html}
                 </div>
                 """
         except Exception as e:
-            pass  # Skip if can't get P/C data
-        
+            # Silently fail if Cboe scraping encounters an issue or is missing
+            html += f"<p style='color:#e74c3c;'>⚠️ Failed to load Cboe Market Sentiment: {type(e).__name__}</p>"
+            pass
+
+
+ 
         # ZONE GUIDE
         html += """
         <div class='section-gray'>📊 PSAR ZONE & MOMENTUM GUIDE</div>

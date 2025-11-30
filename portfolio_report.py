@@ -10,6 +10,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
 import yfinance as yf
+from cboe import get_cboe_ratios_and_analyze
 
 
 class PortfolioReport:
@@ -258,40 +259,26 @@ class PortfolioReport:
         
         html += f"<h2>📊 {self.report_title} Report - {datetime.now().strftime('%Y-%m-%d %H:%M')}</h2>"
         
-        # PUT/CALL RATIO SENTIMENT INDICATOR
+       
+      # PUT/CALL RATIO SENTIMENT INDICATOR (New Cboe logic)
         try:
-            from market_scanner import get_market_put_call_ratio
-            pc_data = get_market_put_call_ratio()
+            # The function handles scraping and returns a formatted string
+            pc_analysis_text = get_cboe_ratios_and_analyze()
             
-            if pc_data:
-                pc_ratio = pc_data.get('pc_ratio')
-                warning = pc_data.get('warning')
-                warning_level = pc_data.get('warning_level')
-                psar_note = pc_data.get('psar_note', '')
-                
-                # Color based on warning level
-                if warning_level == 'DANGER':
-                    box_color = '#f8d7da'
-                    border_color = '#dc3545'
-                elif warning_level == 'CAUTION':
-                    box_color = '#fff3cd'
-                    border_color = '#ffc107'
-                elif warning_level in ['OPPORTUNITY', 'BULLISH']:
-                    box_color = '#d4edda'
-                    border_color = '#28a745'
-                else:
-                    box_color = '#e2e3e5'
-                    border_color = '#6c757d'
-                
+            # Format the pre-formatted text into an aesthetically pleasing HTML block
+            if pc_analysis_text:
+                pc_html = pc_analysis_text.replace('\n', '<br>')
                 html += f"""
-                <div style='background-color:{box_color}; border-left:4px solid {border_color}; padding:10px; margin:10px 0;'>
-                    <strong>🎯 Market Sentiment:</strong> P/C Ratio <strong>{pc_ratio:.2f}</strong> | {psar_note}<br>
-                    <span style='font-size:12px;'>{warning}</span>
+                <div class="section" style="background-color: #ecf0f1; padding: 15px; margin: 15px 0; border-radius: 5px;">
+                    {pc_html}
                 </div>
                 """
         except Exception as e:
-            pass  # Skip if can't get P/C data
-        
+            # Silently fail if Cboe scraping encounters an issue or is missing
+            html += f"<p style='color:#e74c3c;'>⚠️ Failed to load Cboe Market Sentiment: {type(e).__name__}</p>"
+            pass 
+
+         
         # SUMMARY - different format for friends vs mystocks
         if self.is_friends_mode:
             # Friends mode: just show counts, no dollar values

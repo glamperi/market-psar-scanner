@@ -13,97 +13,131 @@ from ta.trend import MACD, PSARIndicator
 from ta.volatility import BollingerBands
 from ta.momentum import WilliamsRIndicator, UltimateOscillator, RSIIndicator
 from ta.trend import CCIIndicator
+from cboe import get_cboe_ratios_and_analyze
 
 # Cache for FINRA short interest data (to avoid repeated API calls)
 _finra_short_cache = {}
 
+
+
+# The original function in this location has been replaced by a call to the new, external cboe.py script.
+# This wrapper maintains compatibility with the rest of the market_scanner.py codebase.
 def get_market_put_call_ratio():
     """
-    Get CBOE equity put/call ratio data and apply PSAR analysis.
-    
-    Interpretation (contrarian indicator):
-    - P/C < 0.5: Extreme bullishness = POTENTIAL TOP (bearish signal)
-    - P/C 0.5-0.6: High bullishness = caution for longs  
-    - P/C 0.6-0.7: Bullish sentiment = normal
-    - P/C 0.7-0.9: Neutral
-    - P/C > 0.9: Elevated fear = potential buying opportunity
-    - P/C > 1.0: High fear = contrarian buy signal
-    
-    Returns dict with current ratio, PSAR signal on P/C ratio
+    Calls the external CBOE Put/Call Ratio analysis script and prints the market sentiment.
+    (Replaces the old, faulty CBOE data fetching function).
     """
+    print("\n" + "="*70)
+    print("MARKET SENTIMENT CHECK")
+    print("="*70)
     try:
-        import requests
-        import io
-        from ta.trend import PSARIndicator
+        # The imported function handles the scraping, analysis, and returns the formatted string
+        analysis_output = get_cboe_ratios_and_analyze()
+        print(analysis_output)
+        # Return None, as the new function prints the analysis directly and doesn't need to pass a dict back
+        return None 
+    except ImportError:
+        print("\n⚠️ Cannot run Cboe analysis. Make sure 'cboe.py' is in the same directory and dependencies (selenium, etc.) are installed.")
+        return None
+    except Exception as e:
+        print(f"\n⚠️ Error running Cboe analysis: {type(e).__name__}: {e}")
+        return None
+
         
-        # Fetch CBOE equity put/call ratio data
-        url = "https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/equitypc.csv"
-        response = requests.get(url, timeout=10)
+        # Stream the response to handle large file
+        response = requests.get(url, timeout=30, stream=False)
         
         if response.status_code != 200:
+            print(f"  P/C Ratio: Failed to fetch (status {response.status_code})")
             return None
         
-        # Parse CSV - skip header rows
-        lines = response.text.strip().split('\n')
+        # Get full content and split into lines
+        content = response.text
+        lines = content.strip().split('\n')
+        
+        print(f"  P/C Ratio: Fetched {len(lines)} lines from CBOE")
+        
+        # Parse ALL data lines (date starts with month number 1-12)
         data_lines = []
         for line in lines:
-            if line.startswith('1') or line.startswith('2'):  # Date lines start with year
-                parts = line.split(',')
-                if len(parts) >= 5:
+            parts = line.split(',')
+            if len(parts) >= 5:
+                date_str = parts[0].strip()
+                # Check if first part looks like a date (contains /)
+                if '/' in date_str:
                     try:
-                        date_str = parts[0]
                         pc_ratio = float(parts[4])
-                        data_lines.append({'date': date_str, 'pc_ratio': pc_ratio})
-                    except:
+                        data_lines.append({'date_str': date_str, 'pc_ratio': pc_ratio})
+                    except (ValueError, IndexError):
                         continue
         
+        print(f"  P/C Ratio: Parsed {len(data_lines)} data points")
+        
         if len(data_lines) < 20:
+            print(f"  P/C Ratio: Not enough data")
             return None
         
-        # Create DataFrame for PSAR calculation
-        df = pd.DataFrame(data_lines)
-        df['date'] = pd.to_datetime(df['date'], format='%m/%d/%Y')
-        df = df.sort_values('date').tail(100)  # Last 100 trading days
+        # Parse dates - take last 500 entries for efficiency
+        recent_data = data_lines[-500:] if len(data_lines) > 500 else data_lines
         
-        # Get current P/C ratio
+        parsed_data = []
+        for item in recent_data:
+            try:
+                # Format is M/D/YYYY
+                dt = datetime.strptime(item['date_str'], '%m/%d/%Y')
+                parsed_data.append({'date': dt, 'pc_ratio': item['pc_ratio']})
+            except ValueError:
+                continue
+        
+        if len(parsed_data) < 20:
+            print(f"  P/C Ratio: Date parsing failed")
+            return None
+            
+        df = pd.DataFrame(parsed_data)
+        df = df.sort_values('date')
+        
+        # Get most recent 100 trading days for PSAR
+        df = df.tail(100).reset_index(drop=True)
+        
+        # Get current P/C ratio (most recent)
         current_pc = df['pc_ratio'].iloc[-1]
         current_date = df['date'].iloc[-1]
         
-        # For PSAR, we need High/Low/Close - use P/C ratio as all three
-        # This lets us detect trend changes in the P/C ratio itself
-        df['High'] = df['pc_ratio'].rolling(3).max().fillna(df['pc_ratio'])
-        df['Low'] = df['pc_ratio'].rolling(3).min().fillna(df['pc_ratio'])
+        print(f"  P/C Ratio: Latest = {current_pc:.2f} on {current_date.strftime('%Y-%m-%d')}")
+        
+        # For PSAR, create High/Low from rolling window
+        df['High'] = df['pc_ratio'].rolling(3, min_periods=1).max()
+        df['Low'] = df['pc_ratio'].rolling(3, min_periods=1).min()
         df['Close'] = df['pc_ratio']
         
         # Apply PSAR to P/C ratio
-        if len(df) >= 20:
-            psar_indicator = PSARIndicator(
-                high=df['High'], 
-                low=df['Low'], 
-                close=df['Close'],
-                step=0.02,
-                max_step=0.2
-            )
-            psar = psar_indicator.psar()
-            psar_up = psar_indicator.psar_up()
-            
-            # PSAR bullish on P/C ratio means P/C is trending UP (fear rising)
-            # This is actually BEARISH for stocks (contrarian)
-            pc_psar_bullish = pd.notna(psar_up.iloc[-1])
-            pc_psar_value = psar.iloc[-1]
-            
-            # Calculate distance from PSAR
-            pc_psar_dist = ((current_pc - pc_psar_value) / pc_psar_value) * 100 if pc_psar_value > 0 else 0
-        else:
-            pc_psar_bullish = None
-            pc_psar_value = None
-            pc_psar_dist = 0
+        pc_psar_bullish = None
+        pc_psar_value = None
+        pc_psar_dist = 0
         
-        # Get 10-day and 20-day moving averages
+        if len(df) >= 20:
+            try:
+                psar_indicator = PSARIndicator(
+                    high=df['High'], 
+                    low=df['Low'], 
+                    close=df['Close'],
+                    step=0.02,
+                    max_step=0.2
+                )
+                psar = psar_indicator.psar()
+                psar_up = psar_indicator.psar_up()
+                
+                pc_psar_bullish = pd.notna(psar_up.iloc[-1])
+                pc_psar_value = psar.iloc[-1]
+                pc_psar_dist = ((current_pc - pc_psar_value) / pc_psar_value) * 100 if pc_psar_value > 0 else 0
+            except Exception as e:
+                print(f"  P/C PSAR error: {e}")
+        
+        # Get moving averages
         pc_ma10 = df['pc_ratio'].tail(10).mean()
         pc_ma20 = df['pc_ratio'].tail(20).mean()
         
-        # 12-month high/low (approximately 252 trading days, but we only have 100)
+        # Range within our data
         pc_high = df['pc_ratio'].max()
         pc_low = df['pc_ratio'].min()
         
@@ -130,11 +164,9 @@ def get_market_put_call_ratio():
         # PSAR trend interpretation
         if pc_psar_bullish is not None:
             if pc_psar_bullish:
-                # P/C ratio trending UP = fear rising = bearish for stocks
                 psar_trend = 'FEAR_RISING'
                 psar_note = 'P/C PSAR ↗️ (fear rising - caution for longs)'
             else:
-                # P/C ratio trending DOWN = fear falling = bullish for stocks
                 psar_trend = 'FEAR_FALLING'
                 psar_note = 'P/C PSAR ↘️ (fear falling - bullish for stocks)'
         else:
@@ -159,7 +191,7 @@ def get_market_put_call_ratio():
         }
         
     except Exception as e:
-        # Fallback: return None
+        print(f"  P/C Ratio error: {e}")
         return None
 
 def get_finra_short_interest(ticker):
