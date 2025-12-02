@@ -11,6 +11,12 @@ from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
 import yfinance as yf
 
+# Import IBD utilities for formatting
+try:
+    from ibd_utils import format_ibd_ticker
+except ImportError:
+    format_ibd_ticker = None
+
 
 class PortfolioReport:
     def __init__(self, scan_results, position_values=None, is_friends_mode=False):
@@ -49,6 +55,20 @@ class PortfolioReport:
                 json.dump(self.exit_history, f, indent=2)
         except:
             pass
+    
+    def get_ibd_ticker_display(self, r):
+        """Format ticker with IBD star and link if applicable"""
+        is_ibd = 'IBD' in r.get('source', '')
+        ibd_url = r.get('ibd_url')
+        
+        if format_ibd_ticker:
+            return format_ibd_ticker(r['ticker'], r.get('source', ''), ibd_url)
+        elif is_ibd and ibd_url:
+            return f"<a href='{ibd_url}' target='_blank' style='text-decoration:none;'>⭐</a>{r['ticker']}"
+        elif is_ibd:
+            return f"⭐{r['ticker']}"
+        else:
+            return r['ticker']
     
     def update_exit_history(self):
         now = datetime.now()
@@ -436,7 +456,7 @@ class PortfolioReport:
                     html += self._build_zone_table(zone_list, zone_class)
         
         html += """<hr><p style='font-size:10px;color:#7f8c8d;'>
-        <strong>⭐ = IBD Stock</strong> (Investor's Business Daily growth stock list)<br>
+        <strong>⭐ = IBD Stock</strong> (click star for IBD chart &amp; buy points)<br>
         <strong>Momentum (1-10):</strong> Trajectory since signal start. 8-10=Strong, 4-7=Neutral, 1-3=Weak<br>
         <strong>ATR:</strong> 🔥=Overbought (price > EMA8+ATR, consider selling/covered calls) | ❄️=Oversold (good to buy) | —=Normal<br>
         <strong>PRSI:</strong> PSAR on RSI. ↗️=RSI trending up | ↘️=RSI trending down<br>
@@ -469,8 +489,7 @@ class PortfolioReport:
             obv_html = self.get_obv_display(r.get('obv_status', 'NEUTRAL'))
             atr_html = self.get_atr_display(r)
             prsi_html = self.get_prsi_display(r)
-            is_ibd = 'IBD' in r.get('source', '')
-            ticker_display = f"⭐{r['ticker']}" if is_ibd else r['ticker']
+            ticker_display = self.get_ibd_ticker_display(r)
             html += f"<tr><td><strong>{ticker_display}</strong></td><td><strong>{self.format_value(r['position_value'])}</strong></td><td>${r['price']:.2f}</td><td style='color:{zone_color};font-weight:bold;'>{r['psar_distance']:+.1f}%</td><td>{self.get_momentum_display(r.get('psar_momentum', 5))}</td><td>{atr_html}</td><td>{prsi_html}</td><td>{obv_html}</td><td>{r['signal_weight']}</td><td style='font-size:10px;'>{self.get_indicator_symbols(r)}</td></tr>"
         return html + "</table>"
     
@@ -483,8 +502,7 @@ class PortfolioReport:
             obv_html = self.get_obv_display(r.get('obv_status', 'NEUTRAL'))
             atr_html = self.get_atr_display(r)
             prsi_html = self.get_prsi_display(r)
-            is_ibd = 'IBD' in r.get('source', '')
-            ticker_display = f"⭐{r['ticker']}" if is_ibd else r['ticker']
+            ticker_display = self.get_ibd_ticker_display(r)
             html += f"<tr><td><strong>{ticker_display}</strong></td><td>{val_str}</td><td>${r['price']:.2f}</td><td style='color:{zone_color};'>{r['psar_distance']:+.1f}%</td><td>{self.get_momentum_display(r.get('psar_momentum', 5))}</td><td>{atr_html}</td><td>{prsi_html}</td><td>{obv_html}</td><td>{r['signal_weight']}</td></tr>"
         return html + "</table>"
     
@@ -496,8 +514,7 @@ class PortfolioReport:
             obv_html = self.get_obv_display(r.get('obv_status', 'NEUTRAL'))
             atr_html = self.get_atr_display(r)
             prsi_html = self.get_prsi_display(r)
-            is_ibd = 'IBD' in r.get('source', '')
-            ticker_display = f"⭐{r['ticker']}" if is_ibd else r['ticker']
+            ticker_display = self.get_ibd_ticker_display(r)
             html += f"<tr><td><strong>{ticker_display}</strong></td><td>${r['price']:.2f}</td><td style='color:{zone_color};'>{r['psar_distance']:+.1f}%</td><td>{self.get_momentum_display(r.get('psar_momentum', 5))}</td><td>{atr_html}</td><td>{prsi_html}</td><td>{obv_html}</td><td>{r['signal_weight']}</td></tr>"
         return html + "</table>"
     

@@ -14,6 +14,15 @@ from ta.volatility import BollingerBands
 from ta.momentum import WilliamsRIndicator, UltimateOscillator, RSIIndicator
 from ta.trend import CCIIndicator
 
+# Import IBD utilities
+try:
+    from ibd_utils import load_ibd_data, get_ibd_url, is_ibd_stock
+except ImportError:
+    # Fallback if ibd_utils not available
+    load_ibd_data = None
+    get_ibd_url = None
+    is_ibd_stock = None
+
 # Cache for FINRA short interest data (to avoid repeated API calls)
 _finra_short_cache = {}
 
@@ -159,112 +168,21 @@ class MarketScanner:
         
         return watchlist
     
+    def get_ibd_url(self, ticker, exchange=None):
+        """Generate IBD research URL for a ticker - delegates to ibd_utils module"""
+        if get_ibd_url is None:
+            return None
+        return get_ibd_url(ticker, self.ibd_stats, exchange)
+    
     def load_ibd_stats(self):
-        """Load IBD stats from all IBD CSV/Excel files"""
-        ibd_files = [
-            'ibd_50.csv',
-            'ibd_bigcap20.csv', 
-            'ibd_sector.csv',
-            'ibd_ipo.csv',
-            'ibd_spotlight.csv'
-        ]
-        
-        all_ibd_tickers = []
-        
-        for filename in ibd_files:
-            if os.path.exists(filename):
-                try:
-                    # IBD files are Excel files with header rows before data
-                    df = None
-                    
-                    # Try Excel with xlrd engine (for .xls files), no header first
-                    try:
-                        df = pd.read_excel(filename, engine='xlrd', header=None)
-                    except:
-                        try:
-                            df = pd.read_excel(filename, header=None)
-                        except:
-                            try:
-                                df = pd.read_csv(filename, header=None)
-                            except:
-                                pass
-                    
-                    if df is None or df.empty:
-                        print(f"  ✗ Could not read {filename}")
-                        continue
-                    
-                    # Find the header row (row where first cell is 'Symbol')
-                    header_row = None
-                    for i, row in df.iterrows():
-                        first_cell = str(row.iloc[0]).strip().upper()
-                        if first_cell == 'SYMBOL':
-                            header_row = i
-                            break
-                    
-                    if header_row is None:
-                        print(f"  ✗ Could not find header in {filename}")
-                        continue
-                    
-                    # Re-read with correct header
-                    try:
-                        df = pd.read_excel(filename, engine='xlrd', header=header_row)
-                    except:
-                        try:
-                            df = pd.read_excel(filename, header=header_row)
-                        except:
-                            df = pd.read_csv(filename, header=header_row)
-                    
-                    # Get symbols from first column
-                    symbol_col = df.columns[0]
-                    
-                    # Check for rating columns
-                    composite_col = None
-                    eps_col = None
-                    rs_col = None
-                    smr_col = None
-                    
-                    for col in df.columns:
-                        col_upper = str(col).upper()
-                        if 'COMPOSITE' in col_upper:
-                            composite_col = col
-                        elif col_upper == 'EPS RATING' or col_upper == 'EPS':
-                            eps_col = col
-                        elif col_upper == 'RS RATING' or col_upper == 'RS':
-                            rs_col = col
-                        elif col_upper == 'SMR RATING' or col_upper == 'SMR':
-                            smr_col = col
-                    
-                    # Extract tickers and stats
-                    count = 0
-                    for _, row in df.iterrows():
-                        symbol = str(row[symbol_col]).strip().upper()
-                        
-                        # Skip invalid symbols
-                        if not symbol or symbol == 'NAN' or symbol == 'SYMBOL' or len(symbol) > 10:
-                            continue
-                        if not symbol[0].isalpha():
-                            continue
-                        
-                        all_ibd_tickers.append(symbol)
-                        count += 1
-                        
-                        # Store stats
-                        self.ibd_stats[symbol] = {
-                            'composite': row.get(composite_col, 'N/A') if composite_col else 'N/A',
-                            'eps': row.get(eps_col, 'N/A') if eps_col else 'N/A',
-                            'rs': row.get(rs_col, 'N/A') if rs_col else 'N/A',
-                            'smr': row.get(smr_col, 'N/A') if smr_col else 'N/A',
-                            'source': filename.replace('.csv', '').replace('_', ' ').upper()
-                        }
-                    
-                    print(f"  ✓ Loaded {count} tickers from {filename}")
-                    
-                except Exception as e:
-                    print(f"  ✗ Error loading {filename}: {e}")
-        
-        unique_tickers = list(set(all_ibd_tickers))
-        print(f"  Total unique IBD tickers: {len(unique_tickers)}")
-        return unique_tickers
+        """Load IBD stats from all IBD CSV/Excel files - delegates to ibd_utils module"""
+        if load_ibd_data is not None:
+            self.ibd_stats, tickers = load_ibd_data()
+            return tickers
+        else:
+            # Fallback if module not available
+            print("  ✗ ibd_utils module not found, IBD features disabled")
+            return []
     
     def load_sp500_tickers(self):
         """Load S&P 500 from CSV"""
@@ -988,6 +906,9 @@ class MarketScanner:
             # Get IBD stats if available
             ibd_data = self.ibd_stats.get(ticker_symbol, {})
             
+            # Get IBD URL if available
+            ibd_url = self.get_ibd_url(ticker_symbol, info.get('exchange'))
+            
             result = {
                 'ticker': original_ticker,  # Use original ticker format for display
                 'company': company_name if company_name else ticker_symbol,
@@ -1004,6 +925,7 @@ class MarketScanner:
                 'eps': ibd_data.get('eps', 'N/A'),
                 'rs': ibd_data.get('rs', 'N/A'),
                 'smr': ibd_data.get('smr', 'N/A'),
+                'ibd_url': ibd_url,
                 **indicators
             }
             
