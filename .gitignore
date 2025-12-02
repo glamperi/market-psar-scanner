@@ -8,34 +8,19 @@ venv/
 # macOS
 .DS_Store
 
-# Debug/temp files
+# IDE
+.vscode/
+.idea/
+
+# Generated files
 *.html
-cboe_*.html
-test.py
-test_*.py
-
-# Backup files
-*.old
-*.last
-*.backup
-*.stupid
-*.works_no_ibd*
-*.from.gem*
-*.standalone
-
-# Data files (user-specific)
-*.xls
 scan_status.json
 exit_history.json
 shorts_tracking_*.csv
-cboe_daily_pcr.csv
+
+# Archive folder (old backups)
+archive/
 
 # Output folders
 outputs/
 scan_history/
-files/
-files.zip
-
-# IDE
-.vscode/
-.idea/
