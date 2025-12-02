@@ -13,186 +13,11 @@ from ta.trend import MACD, PSARIndicator
 from ta.volatility import BollingerBands
 from ta.momentum import WilliamsRIndicator, UltimateOscillator, RSIIndicator
 from ta.trend import CCIIndicator
-from cboe import get_cboe_ratios_and_analyze
 
 # Cache for FINRA short interest data (to avoid repeated API calls)
 _finra_short_cache = {}
 
-
-
-# The original function in this location has been replaced by a call to the new, external cboe.py script.
-# This wrapper maintains compatibility with the rest of the market_scanner.py codebase.
-def get_market_put_call_ratio():
-    """
-    Calls the external CBOE Put/Call Ratio analysis script and prints the market sentiment.
-    (Replaces the old, faulty CBOE data fetching function).
-    """
-    print("\n" + "="*70)
-    print("MARKET SENTIMENT CHECK")
-    print("="*70)
-    try:
-        # The imported function handles the scraping, analysis, and returns the formatted string
-        analysis_output = get_cboe_ratios_and_analyze()
-        print(analysis_output)
-        # Return None, as the new function prints the analysis directly and doesn't need to pass a dict back
-        return None 
-    except ImportError:
-        print("\n⚠️ Cannot run Cboe analysis. Make sure 'cboe.py' is in the same directory and dependencies (selenium, etc.) are installed.")
-        return None
-    except Exception as e:
-        print(f"\n⚠️ Error running Cboe analysis: {type(e).__name__}: {e}")
-        return None
-
-        
-        # Stream the response to handle large file
-        response = requests.get(url, timeout=30, stream=False)
-        
-        if response.status_code != 200:
-            print(f"  P/C Ratio: Failed to fetch (status {response.status_code})")
-            return None
-        
-        # Get full content and split into lines
-        content = response.text
-        lines = content.strip().split('\n')
-        
-        print(f"  P/C Ratio: Fetched {len(lines)} lines from CBOE")
-        
-        # Parse ALL data lines (date starts with month number 1-12)
-        data_lines = []
-        for line in lines:
-            parts = line.split(',')
-            if len(parts) >= 5:
-                date_str = parts[0].strip()
-                # Check if first part looks like a date (contains /)
-                if '/' in date_str:
-                    try:
-                        pc_ratio = float(parts[4])
-                        data_lines.append({'date_str': date_str, 'pc_ratio': pc_ratio})
-                    except (ValueError, IndexError):
-                        continue
-        
-        print(f"  P/C Ratio: Parsed {len(data_lines)} data points")
-        
-        if len(data_lines) < 20:
-            print(f"  P/C Ratio: Not enough data")
-            return None
-        
-        # Parse dates - take last 500 entries for efficiency
-        recent_data = data_lines[-500:] if len(data_lines) > 500 else data_lines
-        
-        parsed_data = []
-        for item in recent_data:
-            try:
-                # Format is M/D/YYYY
-                dt = datetime.strptime(item['date_str'], '%m/%d/%Y')
-                parsed_data.append({'date': dt, 'pc_ratio': item['pc_ratio']})
-            except ValueError:
-                continue
-        
-        if len(parsed_data) < 20:
-            print(f"  P/C Ratio: Date parsing failed")
-            return None
-            
-        df = pd.DataFrame(parsed_data)
-        df = df.sort_values('date')
-        
-        # Get most recent 100 trading days for PSAR
-        df = df.tail(100).reset_index(drop=True)
-        
-        # Get current P/C ratio (most recent)
-        current_pc = df['pc_ratio'].iloc[-1]
-        current_date = df['date'].iloc[-1]
-        
-        print(f"  P/C Ratio: Latest = {current_pc:.2f} on {current_date.strftime('%Y-%m-%d')}")
-        
-        # For PSAR, create High/Low from rolling window
-        df['High'] = df['pc_ratio'].rolling(3, min_periods=1).max()
-        df['Low'] = df['pc_ratio'].rolling(3, min_periods=1).min()
-        df['Close'] = df['pc_ratio']
-        
-        # Apply PSAR to P/C ratio
-        pc_psar_bullish = None
-        pc_psar_value = None
-        pc_psar_dist = 0
-        
-        if len(df) >= 20:
-            try:
-                psar_indicator = PSARIndicator(
-                    high=df['High'], 
-                    low=df['Low'], 
-                    close=df['Close'],
-                    step=0.02,
-                    max_step=0.2
-                )
-                psar = psar_indicator.psar()
-                psar_up = psar_indicator.psar_up()
-                
-                pc_psar_bullish = pd.notna(psar_up.iloc[-1])
-                pc_psar_value = psar.iloc[-1]
-                pc_psar_dist = ((current_pc - pc_psar_value) / pc_psar_value) * 100 if pc_psar_value > 0 else 0
-            except Exception as e:
-                print(f"  P/C PSAR error: {e}")
-        
-        # Get moving averages
-        pc_ma10 = df['pc_ratio'].tail(10).mean()
-        pc_ma20 = df['pc_ratio'].tail(20).mean()
-        
-        # Range within our data
-        pc_high = df['pc_ratio'].max()
-        pc_low = df['pc_ratio'].min()
-        
-        # Determine sentiment and warning
-        if current_pc < 0.50:
-            warning = "⚠️ EXTREME COMPLACENCY (<0.50) - Potential market top"
-            warning_level = 'DANGER'
-        elif current_pc < 0.60:
-            warning = "🟡 HIGH BULLISHNESS (0.50-0.60) - Caution for new longs"
-            warning_level = 'CAUTION'
-        elif current_pc < 0.70:
-            warning = "Bullish sentiment (0.60-0.70) - Normal"
-            warning_level = 'NORMAL'
-        elif current_pc < 0.90:
-            warning = "Neutral sentiment (0.70-0.90)"
-            warning_level = 'NORMAL'
-        elif current_pc < 1.00:
-            warning = "🟢 Elevated fear (0.90-1.00) - Potential buying opportunity"
-            warning_level = 'BULLISH'
-        else:
-            warning = "🟢 HIGH FEAR (>1.00) - Contrarian buy signal / potential bottom"
-            warning_level = 'OPPORTUNITY'
-        
-        # PSAR trend interpretation
-        if pc_psar_bullish is not None:
-            if pc_psar_bullish:
-                psar_trend = 'FEAR_RISING'
-                psar_note = 'P/C PSAR ↗️ (fear rising - caution for longs)'
-            else:
-                psar_trend = 'FEAR_FALLING'
-                psar_note = 'P/C PSAR ↘️ (fear falling - bullish for stocks)'
-        else:
-            psar_trend = 'UNKNOWN'
-            psar_note = ''
-        
-        return {
-            'pc_ratio': current_pc,
-            'pc_date': current_date.strftime('%Y-%m-%d'),
-            'pc_ma10': pc_ma10,
-            'pc_ma20': pc_ma20,
-            'pc_high_100d': pc_high,
-            'pc_low_100d': pc_low,
-            'pc_psar_bullish': pc_psar_bullish,
-            'pc_psar_value': pc_psar_value,
-            'pc_psar_dist': pc_psar_dist,
-            'psar_trend': psar_trend,
-            'psar_note': psar_note,
-            'warning': warning,
-            'warning_level': warning_level,
-            'source': 'CBOE Equity P/C Ratio'
-        }
-        
-    except Exception as e:
-        print(f"  P/C Ratio error: {e}")
-        return None
+# Note: Market sentiment (Put/Call ratio) is now handled by cboe.py using Selenium
 
 def get_finra_short_interest(ticker):
     """
@@ -335,7 +160,7 @@ class MarketScanner:
         return watchlist
     
     def load_ibd_stats(self):
-        """Load IBD stats from all IBD CSV files"""
+        """Load IBD stats from all IBD CSV/Excel files"""
         ibd_files = [
             'ibd_50.csv',
             'ibd_bigcap20.csv', 
@@ -349,41 +174,97 @@ class MarketScanner:
         for filename in ibd_files:
             if os.path.exists(filename):
                 try:
-                    df = pd.read_csv(filename)
+                    # IBD files are Excel files with header rows before data
+                    df = None
                     
-                    # Check if this file has stats or just symbols
-                    if 'Composite' in df.columns:
-                        # Full stats file
-                        for _, row in df.iterrows():
-                            symbol = str(row['Symbol']).strip().upper()
-                            all_ibd_tickers.append(symbol)
-                            
-                            self.ibd_stats[symbol] = {
-                                'composite': row.get('Composite', 'N/A'),
-                                'eps': row.get('EPS', 'N/A'),
-                                'rs': row.get('RS', 'N/A'),
-                                'smr': row.get('SMR', 'N/A'),
-                                'source': filename.replace('.csv', '').replace('_', ' ').upper()
-                            }
-                    else:
-                        # Just symbols (like ibd_spotlight.csv)
-                        for symbol in df['Symbol'].tolist():
-                            symbol = str(symbol).strip().upper()
-                            all_ibd_tickers.append(symbol)
-                            if symbol not in self.ibd_stats:
-                                self.ibd_stats[symbol] = {
-                                    'composite': 'N/A',
-                                    'eps': 'N/A',
-                                    'rs': 'N/A',
-                                    'smr': 'N/A',
-                                    'source': filename.replace('.csv', '').replace('_', ' ').upper()
-                                }
+                    # Try Excel with xlrd engine (for .xls files), no header first
+                    try:
+                        df = pd.read_excel(filename, engine='xlrd', header=None)
+                    except:
+                        try:
+                            df = pd.read_excel(filename, header=None)
+                        except:
+                            try:
+                                df = pd.read_csv(filename, header=None)
+                            except:
+                                pass
                     
-                    print(f"✓ Loaded {len(df)} tickers from {filename}")
+                    if df is None or df.empty:
+                        print(f"  ✗ Could not read {filename}")
+                        continue
+                    
+                    # Find the header row (row where first cell is 'Symbol')
+                    header_row = None
+                    for i, row in df.iterrows():
+                        first_cell = str(row.iloc[0]).strip().upper()
+                        if first_cell == 'SYMBOL':
+                            header_row = i
+                            break
+                    
+                    if header_row is None:
+                        print(f"  ✗ Could not find header in {filename}")
+                        continue
+                    
+                    # Re-read with correct header
+                    try:
+                        df = pd.read_excel(filename, engine='xlrd', header=header_row)
+                    except:
+                        try:
+                            df = pd.read_excel(filename, header=header_row)
+                        except:
+                            df = pd.read_csv(filename, header=header_row)
+                    
+                    # Get symbols from first column
+                    symbol_col = df.columns[0]
+                    
+                    # Check for rating columns
+                    composite_col = None
+                    eps_col = None
+                    rs_col = None
+                    smr_col = None
+                    
+                    for col in df.columns:
+                        col_upper = str(col).upper()
+                        if 'COMPOSITE' in col_upper:
+                            composite_col = col
+                        elif col_upper == 'EPS RATING' or col_upper == 'EPS':
+                            eps_col = col
+                        elif col_upper == 'RS RATING' or col_upper == 'RS':
+                            rs_col = col
+                        elif col_upper == 'SMR RATING' or col_upper == 'SMR':
+                            smr_col = col
+                    
+                    # Extract tickers and stats
+                    count = 0
+                    for _, row in df.iterrows():
+                        symbol = str(row[symbol_col]).strip().upper()
+                        
+                        # Skip invalid symbols
+                        if not symbol or symbol == 'NAN' or symbol == 'SYMBOL' or len(symbol) > 10:
+                            continue
+                        if not symbol[0].isalpha():
+                            continue
+                        
+                        all_ibd_tickers.append(symbol)
+                        count += 1
+                        
+                        # Store stats
+                        self.ibd_stats[symbol] = {
+                            'composite': row.get(composite_col, 'N/A') if composite_col else 'N/A',
+                            'eps': row.get(eps_col, 'N/A') if eps_col else 'N/A',
+                            'rs': row.get(rs_col, 'N/A') if rs_col else 'N/A',
+                            'smr': row.get(smr_col, 'N/A') if smr_col else 'N/A',
+                            'source': filename.replace('.csv', '').replace('_', ' ').upper()
+                        }
+                    
+                    print(f"  ✓ Loaded {count} tickers from {filename}")
+                    
                 except Exception as e:
-                    print(f"✗ Error loading {filename}: {e}")
+                    print(f"  ✗ Error loading {filename}: {e}")
         
-        return list(set(all_ibd_tickers))
+        unique_tickers = list(set(all_ibd_tickers))
+        print(f"  Total unique IBD tickers: {len(unique_tickers)}")
+        return unique_tickers
     
     def load_sp500_tickers(self):
         """Load S&P 500 from CSV"""
@@ -1158,7 +1039,12 @@ class MarketScanner:
             print(f"\n📍 Scanning priority ticker: {ticker}")
             
             try:
-                result = self.scan_ticker_full(ticker, source="Watchlist", skip_market_cap_filter=True)
+                # Check if this ticker is on IBD lists
+                source = "Watchlist"
+                if ticker in self.ibd_stats:
+                    source = "Watchlist, IBD"
+                
+                result = self.scan_ticker_full(ticker, source=source, skip_market_cap_filter=True)
                 if result:
                     result['is_watchlist'] = True
                     watchlist_results.append(result)
@@ -1285,7 +1171,12 @@ class MarketScanner:
         
         for ticker in mystocks:
             try:
-                result = self.scan_ticker_full(ticker, source="Portfolio", skip_market_cap_filter=True)
+                # Check if this ticker is on IBD lists
+                source = "Portfolio"
+                if ticker in self.ibd_stats:
+                    source = "Portfolio, IBD"
+                
+                result = self.scan_ticker_full(ticker, source=source, skip_market_cap_filter=True)
                 if result:
                     result['is_watchlist'] = True  # Treat all as watchlist for display
                     all_results.append(result)
@@ -1375,7 +1266,12 @@ class MarketScanner:
         
         for ticker in friends_stocks:
             try:
-                result = self.scan_ticker_full(ticker, source="Friends", skip_market_cap_filter=True)
+                # Check if this ticker is on IBD lists
+                source = "Friends"
+                if ticker in self.ibd_stats:
+                    source = "Friends, IBD"
+                
+                result = self.scan_ticker_full(ticker, source=source, skip_market_cap_filter=True)
                 if result:
                     result['is_watchlist'] = True
                     all_results.append(result)
