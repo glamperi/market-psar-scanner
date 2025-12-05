@@ -61,7 +61,7 @@ jobs:
     
     - name: Install dependencies
       run: |
-        pip install yfinance pandas ta requests selenium webdriver-manager
+        pip install -r requirements.txt
     
     - name: Determine scan type
       id: scan_config
