@@ -8,6 +8,9 @@ and formatting IBD-related display elements.
 import os
 import pandas as pd
 
+# Get the directory where this module is located
+MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # Map IBD filenames to their list parameter for URLs
 IBD_LIST_MAP = {
     'ibd_50': 'ibd50',
@@ -17,7 +20,7 @@ IBD_LIST_MAP = {
     'ibd_spotlight': 'stock-spotlight'
 }
 
-# IBD files to load
+# IBD files to load (will check both current dir and module dir)
 IBD_FILES = [
     'ibd_50.csv',
     'ibd_bigcap20.csv',
@@ -47,29 +50,50 @@ def load_ibd_data():
             ...
         }
     """
+    print("Loading IBD data files...")
     ibd_stats = {}
     all_ibd_tickers = []
     
     for filename in IBD_FILES:
-        if os.path.exists(filename):
+        # Check multiple possible locations for IBD files
+        filepath = None
+        possible_paths = [
+            filename,                                           # Current directory
+            os.path.join(MODULE_DIR, filename),                # data/ folder (where ibd_utils.py is)
+            os.path.join(os.path.dirname(MODULE_DIR), filename),  # Parent of data/ (project root)
+            os.path.join('data_files', filename),              # data_files/ folder
+            os.path.join(os.path.dirname(MODULE_DIR), 'data_files', filename),  # project_root/data_files/
+        ]
+        
+        for path in possible_paths:
+            if os.path.exists(path):
+                filepath = path
+                print(f"  Found IBD file: {path}")
+                break
+        
+        if not filepath:
+            print(f"  ✗ IBD file not found: {filename} (checked {len(possible_paths)} locations)")
+            continue
+            
+        if filepath:
             try:
                 # IBD files are Excel files with header rows before data
                 df = None
                 
                 # Try Excel with xlrd engine (for .xls files), no header first
                 try:
-                    df = pd.read_excel(filename, engine='xlrd', header=None)
+                    df = pd.read_excel(filepath, engine='xlrd', header=None)
                 except:
                     try:
-                        df = pd.read_excel(filename, header=None)
+                        df = pd.read_excel(filepath, header=None)
                     except:
                         try:
-                            df = pd.read_csv(filename, header=None)
+                            df = pd.read_csv(filepath, header=None)
                         except:
                             pass
                 
                 if df is None or df.empty:
-                    print(f"  ✗ Could not read {filename}")
+                    print(f"  ✗ Could not read {filepath}")
                     continue
                 
                 # Find the header row (row where first cell is 'Symbol')
@@ -81,17 +105,17 @@ def load_ibd_data():
                         break
                 
                 if header_row is None:
-                    print(f"  ✗ Could not find header in {filename}")
+                    print(f"  ✗ Could not find header in {filepath}")
                     continue
                 
                 # Re-read with correct header
                 try:
-                    df = pd.read_excel(filename, engine='xlrd', header=header_row)
+                    df = pd.read_excel(filepath, engine='xlrd', header=header_row)
                 except:
                     try:
-                        df = pd.read_excel(filename, header=header_row)
+                        df = pd.read_excel(filepath, header=header_row)
                     except:
-                        df = pd.read_csv(filename, header=header_row)
+                        df = pd.read_csv(filepath, header=header_row)
                 
                 # Get symbols from first column
                 symbol_col = df.columns[0]
@@ -113,7 +137,7 @@ def load_ibd_data():
                     elif col_upper == 'SMR RATING' or col_upper == 'SMR':
                         smr_col = col
                 
-                # Get list name for URLs
+                # Get list name for URLs (use original filename for mapping)
                 list_name = IBD_LIST_MAP.get(filename.replace('.csv', ''), 'ibd50')
                 
                 # Extract tickers and stats
@@ -137,7 +161,7 @@ def load_ibd_data():
                             company_name = str(row[col]).strip() if pd.notna(row[col]) else None
                             break
                     
-                    # Store stats
+                    # Store stats (use original filename for source display)
                     ibd_stats[symbol] = {
                         'composite': row.get(composite_col, 'N/A') if composite_col else 'N/A',
                         'eps': row.get(eps_col, 'N/A') if eps_col else 'N/A',
@@ -148,7 +172,7 @@ def load_ibd_data():
                         'list': list_name
                     }
                 
-                print(f"  ✓ Loaded {count} tickers from {filename}")
+                print(f"  ✓ Loaded {count} tickers from {filepath}")
                 
             except Exception as e:
                 print(f"  ✗ Error loading {filename}: {e}")

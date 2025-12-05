@@ -66,6 +66,7 @@ class SmartBuyScanner(BaseScanner):
         self,
         scan_sp500: bool = True,
         scan_nasdaq100: bool = True,
+        scan_russell2000: bool = True,
         scan_ibd: bool = True,
         custom_tickers: Optional[List[str]] = None,
         **kwargs
@@ -76,6 +77,7 @@ class SmartBuyScanner(BaseScanner):
         Args:
             scan_sp500: Include S&P 500 stocks
             scan_nasdaq100: Include NASDAQ 100 stocks
+            scan_russell2000: Include Russell 2000 stocks
             scan_ibd: Include IBD list stocks
             custom_tickers: Additional tickers to scan
             **kwargs: Passed to BaseScanner
@@ -84,31 +86,45 @@ class SmartBuyScanner(BaseScanner):
         
         self.scan_sp500 = scan_sp500
         self.scan_nasdaq100 = scan_nasdaq100
+        self.scan_russell2000 = scan_russell2000
         self.scan_ibd = scan_ibd
         self.custom_tickers = custom_tickers or []
+        # Don't reset ibd_tickers - BaseScanner already loaded it from IBD files
     
     def get_tickers(self) -> List[tuple]:
         """Get tickers for smart buy scan."""
         tickers = []
         seen = set()
         
-        # Custom tickers first (highest priority)
-        for ticker in self.custom_tickers:
-            if ticker not in seen:
-                tickers.append((ticker, "Custom"))
-                seen.add(ticker)
-        
-        # IBD stocks (high priority)
-        if self.scan_ibd:
-            for ticker in self.ibd_tickers:
+        # If custom tickers provided, ONLY scan those (skip all other sources)
+        if self.custom_tickers:
+            for ticker in self.custom_tickers:
                 if ticker not in seen:
-                    source = self.ibd_stats.get(ticker, {}).get('source', 'IBD')
-                    tickers.append((ticker, source))
+                    tickers.append((ticker, "Custom"))
                     seen.add(ticker)
+            return tickers  # Return early - only scan custom tickers
+        
+        # IBD stocks (high priority) - load from CSV files
+        if self.scan_ibd:
+            ibd_files = [
+                ('ibd_50.csv', 'IBD 50'),
+                ('ibd_bigcap20.csv', 'IBD BigCap'),
+                ('ibd_sector.csv', 'IBD Sector'),
+                ('ibd_spotlight.csv', 'IBD Spotlight'),
+                ('ibd_ipo.csv', 'IBD IPO'),
+            ]
+            for filename, source in ibd_files:
+                filepath = f'{DATA_FILES_DIR}/{filename}'
+                ibd_tickers = load_ticker_file(filepath)
+                for ticker in ibd_tickers:
+                    if ticker not in seen:
+                        tickers.append((ticker, source))
+                        seen.add(ticker)
+                        self.ibd_tickers.add(ticker)  # Track as IBD stock
         
         # S&P 500
         if self.scan_sp500:
-            sp500 = load_ticker_file(TICKER_FILES.get('sp500', f'{DATA_FILES_DIR}/sp500_tickers.csv'))
+            sp500 = load_ticker_file(f'{DATA_FILES_DIR}/sp500_tickers.csv')
             for ticker in sp500:
                 if ticker not in seen:
                     tickers.append((ticker, "SP500"))
@@ -116,11 +132,26 @@ class SmartBuyScanner(BaseScanner):
         
         # NASDAQ 100
         if self.scan_nasdaq100:
-            nasdaq = load_ticker_file(TICKER_FILES.get('nasdaq100', f'{DATA_FILES_DIR}/nasdaq100_tickers.csv'))
+            nasdaq = load_ticker_file(f'{DATA_FILES_DIR}/nasdaq100_tickers.csv')
             for ticker in nasdaq:
                 if ticker not in seen:
                     tickers.append((ticker, "NASDAQ100"))
                     seen.add(ticker)
+        
+        # Russell 2000
+        if self.scan_russell2000:
+            russell = load_ticker_file(f'{DATA_FILES_DIR}/russell2000_tickers.csv')
+            for ticker in russell:
+                if ticker not in seen:
+                    tickers.append((ticker, "Russell2000"))
+                    seen.add(ticker)
+        
+        # Custom watchlist
+        custom_watchlist = load_ticker_file(f'{DATA_FILES_DIR}/custom_watchlist.txt')
+        for ticker in custom_watchlist:
+            if ticker not in seen:
+                tickers.append((ticker, "Watchlist"))
+                seen.add(ticker)
         
         return tickers
     
@@ -128,28 +159,24 @@ class SmartBuyScanner(BaseScanner):
         """
         Apply Smart Buy filters.
         
-        Filters for:
-        - Bullish zones (STRONG_BUY, BUY, EARLY_BUY)
-        - Entry allowed (gap < 5%, momentum < 9)
-        - Minimum trend score
+        Default: Show all zones (for full market view)
+        Use --actionable flag to filter to only entry-allowed stocks
         """
         # Must be base filtered first
         if not super().filter_result(result):
             return False
         
-        # Only bullish zones
-        bullish_zones = ['STRONG_BUY', 'BUY', 'EARLY_BUY', 'HOLD']
-        if result.zone not in bullish_zones:
-            return False
+        # If actionable_only mode, apply strict filters
+        if getattr(self, 'actionable_only', False):
+            bullish_zones = ['STRONG_BUY', 'BUY', 'EARLY_BUY', 'HOLD']
+            if result.zone not in bullish_zones:
+                return False
+            if result.zone != 'HOLD' and not result.entry_allowed:
+                return False
+            if result.trend_score < TREND_SCORE_MIN:
+                return False
         
-        # Entry must be allowed (unless HOLD)
-        if result.zone != 'HOLD' and not result.entry_allowed:
-            return False
-        
-        # Minimum trend score
-        if result.trend_score < TREND_SCORE_MIN:
-            return False
-        
+        # Default: show all results
         return True
     
     def get_smart_buy_candidates(self) -> List[ScanResult]:

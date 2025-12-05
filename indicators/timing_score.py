@@ -374,54 +374,74 @@ def get_entry_grade(trend_score: int, timing_score: int,
     """
     Combine Trend and Timing scores into entry grade.
     
+    NOTE: We no longer block on gap. PRSI is primary signal.
+    Gap affects grade quality, not eligibility.
+    
     Args:
         trend_score: From trend_score.py (0-100)
         timing_score: From this module (0-100)
-        gap_allowed: Whether gap is < 5%
+        gap_allowed: Whether gap is < 5% (affects grade, doesn't block)
     
     Returns:
         Dict with grade and recommendation
     """
-    if not gap_allowed:
-        return {
-            'grade': 'X',
-            'color': 'red',
-            'action': 'NO ENTRY - gap too large',
-            'description': 'Wait for price to close gap with PSAR'
-        }
+    # Grade based primarily on trend score (stock quality)
+    # Timing and gap affect the grade level
     
-    # Both must be good for A grade
-    if trend_score >= 70 and 40 <= timing_score <= 70:
-        return {
-            'grade': 'A',
-            'color': 'green',
-            'action': 'ENTER - excellent setup',
-            'description': 'Strong trend + ideal timing'
-        }
+    # Strong trend = A or B
+    if trend_score >= 70:
+        if gap_allowed and 40 <= timing_score <= 70:
+            return {
+                'grade': 'A',
+                'score': trend_score,
+                'color': 'green',
+                'action': 'STRONG ENTRY',
+                'description': 'Strong trend + ideal timing + low gap'
+            }
+        else:
+            return {
+                'grade': 'B',
+                'score': trend_score,
+                'color': 'yellow',
+                'action': 'GOOD ENTRY',
+                'description': 'Strong trend (gap or timing not ideal)'
+            }
     
-    # Either strong trend or good timing
-    if trend_score >= 60 and 35 <= timing_score <= 75:
-        return {
-            'grade': 'B',
-            'color': 'yellow',
-            'action': 'ENTER with caution',
-            'description': 'Good setup, monitor closely'
-        }
+    # Decent trend = B or C
+    if trend_score >= 50:
+        if gap_allowed:
+            return {
+                'grade': 'B',
+                'score': trend_score,
+                'color': 'yellow',
+                'action': 'ENTER with caution',
+                'description': 'Decent trend'
+            }
+        else:
+            return {
+                'grade': 'C',
+                'score': trend_score,
+                'color': 'orange',
+                'action': 'CAUTION - extended',
+                'description': 'Decent trend but gap large'
+            }
     
-    # Marginal
-    if trend_score >= 50 and 30 <= timing_score <= 80:
+    # Weak trend = C or D
+    if trend_score >= 30:
         return {
             'grade': 'C',
+            'score': trend_score,
             'color': 'orange',
-            'action': 'WAIT for better entry',
-            'description': 'Weak trend or poor timing'
+            'action': 'WAIT',
+            'description': 'Weak trend'
         }
     
     return {
         'grade': 'D',
+        'score': trend_score,
         'color': 'red',
         'action': 'AVOID',
-        'description': 'Poor trend and/or timing'
+        'description': 'Very weak trend'
     }
 
 

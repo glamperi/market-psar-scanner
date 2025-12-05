@@ -70,7 +70,10 @@ class SmartShortScanner(BaseScanner):
     def __init__(
         self,
         shorts_file: Optional[str] = None,
-        scan_weak_stocks: bool = True,
+        scan_market: bool = False,
+        scan_sp500: bool = True,
+        scan_nasdaq100: bool = True,
+        scan_russell2000: bool = True,
         **kwargs
     ):
         """
@@ -78,24 +81,53 @@ class SmartShortScanner(BaseScanner):
         
         Args:
             shorts_file: File with short candidates to scan
-            scan_weak_stocks: Also scan for weak stocks in market
+            scan_market: If True, scan full market (for -shortscan mode)
+            scan_sp500: Include S&P 500 in market scan
+            scan_nasdaq100: Include NASDAQ 100 in market scan  
+            scan_russell2000: Include Russell 2000 in market scan
         """
         super().__init__(**kwargs)
         
         self.shorts_file = shorts_file or f'{DATA_FILES_DIR}/shorts.txt'
-        self.scan_weak_stocks = scan_weak_stocks
+        self.scan_market = scan_market
+        self.scan_sp500 = scan_sp500
+        self.scan_nasdaq100 = scan_nasdaq100
+        self.scan_russell2000 = scan_russell2000
     
     def get_tickers(self) -> List[tuple]:
         """Get tickers for short scan."""
         tickers = []
         seen = set()
         
-        # Load shorts watchlist
-        shorts_list = load_ticker_file(self.shorts_file)
-        for ticker in shorts_list:
-            if ticker not in seen:
-                tickers.append((ticker, "Shorts"))
-                seen.add(ticker)
+        if self.scan_market:
+            # Market-wide scan (-shortscan mode)
+            if self.scan_sp500:
+                sp500 = load_ticker_file(f'{DATA_FILES_DIR}/sp500_tickers.csv')
+                for ticker in sp500:
+                    if ticker not in seen:
+                        tickers.append((ticker, "SP500"))
+                        seen.add(ticker)
+            
+            if self.scan_nasdaq100:
+                nasdaq = load_ticker_file(f'{DATA_FILES_DIR}/nasdaq100_tickers.csv')
+                for ticker in nasdaq:
+                    if ticker not in seen:
+                        tickers.append((ticker, "NASDAQ100"))
+                        seen.add(ticker)
+            
+            if self.scan_russell2000:
+                russell = load_ticker_file(f'{DATA_FILES_DIR}/russell2000_tickers.csv')
+                for ticker in russell:
+                    if ticker not in seen:
+                        tickers.append((ticker, "Russell2000"))
+                        seen.add(ticker)
+        else:
+            # Watchlist mode (-shorts mode) - scan shorts.txt
+            shorts_list = load_ticker_file(self.shorts_file)
+            for ticker in shorts_list:
+                if ticker not in seen:
+                    tickers.append((ticker, "Shorts"))
+                    seen.add(ticker)
         
         return tickers
     

@@ -53,9 +53,9 @@ def get_cboe_ratios_and_analyze():
     Fetches Cboe Put/Call Ratios using Selenium web scraping.
     
     The data is in an iframe at ww2.cboe.com with tables showing:
-    TIME, CALLS, PUTS, TOTAL
+    TIME, CALLS, PUTS, TOTAL, P/C RATIO
     
-    P/C Ratio = PUTS / CALLS (calculated from last row of Total section)
+    We find the LAST ROW that has P/C RATIO filled in (not empty).
     """
     # The actual data is in this iframe URL (found via network inspection)
     url = "https://ww2.cboe.com/us/options/market_statistics/?iframe=1"
@@ -90,58 +90,79 @@ def get_cboe_ratios_and_analyze():
             dfs = pd.read_html(StringIO(page_text))
             print(f"  Found {len(dfs)} tables")
             
-            # Look for the "Total" table - should have columns like TIME, CALLS, PUTS, TOTAL
+            # Look for table with P/C RATIO column
             for i, df in enumerate(dfs):
-                if df.empty or len(df.columns) < 3:
+                if df.empty or len(df.columns) < 4:
                     continue
                 
                 cols = [str(c).upper() for c in df.columns]
                 
-                # Check if this looks like the right table
+                # Check if this table has P/C RATIO column
+                has_pc_ratio = any('P/C' in c or 'PC RATIO' in c or 'PUT/CALL' in c for c in cols)
                 has_calls = any('CALL' in c for c in cols)
-                has_puts = any('PUT' in c for c in cols)
+                has_puts = any('PUT' in c and 'CALL' not in c for c in cols)
                 
-                if has_calls and has_puts:
+                if has_pc_ratio and has_calls and has_puts:
                     print(f"  Table {i}: {len(df)} rows, cols: {list(df.columns)}")
                     
                     # Find column indices
                     calls_col = None
                     puts_col = None
                     time_col = None
+                    pc_ratio_col = None
                     
                     for j, col in enumerate(df.columns):
                         col_upper = str(col).upper()
-                        if 'CALL' in col_upper and 'PUT' not in col_upper:
+                        if 'P/C' in col_upper or 'PC RATIO' in col_upper or 'PUT/CALL' in col_upper:
+                            pc_ratio_col = j
+                        elif 'CALL' in col_upper and 'PUT' not in col_upper:
                             calls_col = j
-                        elif 'PUT' in col_upper:
+                        elif 'PUT' in col_upper and 'CALL' not in col_upper:
                             puts_col = j
-                        elif 'TIME' in col_upper or j == 0:
+                        elif 'TIME' in col_upper:
                             time_col = j
                     
+                    if time_col is None:
+                        time_col = 0  # First column is usually TIME
+                    
                     if calls_col is not None and puts_col is not None:
-                        # Get the LAST row (most recent time)
-                        last_row = df.iloc[-1]
+                        # Find the LAST ROW with P/C RATIO filled in
+                        # Iterate backwards through rows to find most recent with data
+                        for row_idx in range(len(df) - 1, -1, -1):
+                            row = df.iloc[row_idx]
+                            
+                            # Check if P/C RATIO column has data (if we found that column)
+                            if pc_ratio_col is not None:
+                                pc_val = str(row.iloc[pc_ratio_col]).strip()
+                                # Skip if P/C RATIO is empty, NaN, or just whitespace
+                                if pc_val in ['', 'nan', 'NaN', '-', '--'] or pd.isna(row.iloc[pc_ratio_col]):
+                                    continue
+                            
+                            try:
+                                # Parse numbers (remove commas if present)
+                                calls_val = str(row.iloc[calls_col]).replace(',', '').strip()
+                                puts_val = str(row.iloc[puts_col]).replace(',', '').strip()
+                                
+                                # Skip if calls/puts are empty
+                                if not calls_val or calls_val in ['', 'nan', 'NaN']:
+                                    continue
+                                    
+                                calls = int(float(calls_val))
+                                puts = int(float(puts_val))
+                                
+                                if calls > 100000:  # Sanity check - should be large numbers
+                                    total_pcr = puts / calls
+                                    
+                                    # Get time
+                                    data_time = str(row.iloc[time_col])
+                                    
+                                    print(f"  Calls: {calls:,}, Puts: {puts:,}, P/C: {total_pcr:.2f} at {data_time}")
+                                    break
+                            except (ValueError, TypeError) as e:
+                                continue
                         
-                        try:
-                            # Parse numbers (remove commas if present)
-                            calls_val = str(last_row.iloc[calls_col]).replace(',', '')
-                            puts_val = str(last_row.iloc[puts_col]).replace(',', '')
-                            
-                            calls = int(calls_val)
-                            puts = int(puts_val)
-                            
-                            if calls > 100000:  # Sanity check - should be large numbers
-                                total_pcr = puts / calls
-                                
-                                # Get time
-                                if time_col is not None:
-                                    data_time = str(last_row.iloc[time_col])
-                                
-                                print(f"  Calls: {calls:,}, Puts: {puts:,}, P/C: {total_pcr:.2f} at {data_time}")
-                                break
-                        except (ValueError, TypeError) as e:
-                            print(f"  Parse error: {e}")
-                            continue
+                        if total_pcr is not None:
+                            break
                             
         except Exception as e:
             print(f"  Table parsing error: {e}")
@@ -154,14 +175,16 @@ def get_cboe_ratios_and_analyze():
             
             if matches:
                 print(f"  Found {len(matches)} time-based rows via regex")
-                last_match = matches[-1]
-                data_time = last_match[0]
-                calls = int(last_match[1].replace(',', ''))
-                puts = int(last_match[2].replace(',', ''))
-                
-                if calls > 100000:
-                    total_pcr = puts / calls
-                    print(f"  Regex: Calls: {calls:,}, Puts: {puts:,}, P/C: {total_pcr:.2f}")
+                # Go backwards through matches to find one with real data
+                for match in reversed(matches):
+                    data_time = match[0]
+                    calls = int(match[1].replace(',', ''))
+                    puts = int(match[2].replace(',', ''))
+                    
+                    if calls > 100000:
+                        total_pcr = puts / calls
+                        print(f"  Regex: Calls: {calls:,}, Puts: {puts:,}, P/C: {total_pcr:.2f}")
+                        break
         
         if total_pcr is None:
             return "🚨 MARKET SENTIMENT FETCH FAILED 🚨\nCould not find calls/puts data on page.\nCBOE may have changed their page layout."

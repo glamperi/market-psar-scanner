@@ -86,13 +86,14 @@ from .atr import (
     format_atr_display
 )
 
-# Trend Score (MACD + Coppock + ADX + MA)
+# Trend Score (MA + ADX/DMI + MACD + RSI Zone)
 from .trend_score import (
     calculate_macd,
     calculate_macd_score,
-    calculate_coppock,
-    calculate_coppock_score,
+    calculate_rsi_for_trend,
+    calculate_rsi_zone_score,
     calculate_adx,
+    get_dmi_state,
     calculate_adx_score,
     calculate_ma_alignment_score,
     calculate_trend_score
@@ -167,6 +168,7 @@ def get_all_indicators(df, use_v2: bool = True):
         # Quick access to key values
         'price': psar_data['price'],
         'psar_gap': psar_gap,
+        'psar_days_in_trend': psar_data.get('days_in_trend', 0),
         'prsi_bullish': prsi_data.get('is_bullish', False),
         'prsi_signal': prsi_data.get('signal', {}),
         'momentum_score': momentum_data.get('score', 5),
@@ -175,7 +177,14 @@ def get_all_indicators(df, use_v2: bool = True):
         'trend_score_value': trend_score.get('score', 50),
         'timing_score_value': timing_score.get('score', 50),
         'entry_allowed': psar_data['entry_risk']['entry_allowed'] and timing_score.get('entry_allowed', True),
-        'grade': entry_grade['grade']
+        'grade': entry_grade['grade'],
+        
+        # Checkboxes for new display
+        'dmi_bullish': trend_score.get('dmi_state', 'choppy') == 'bullish',
+        'adx_strong': trend_score.get('components', {}).get('adx', {}).get('adx', 0) > 25,
+        'adx_value': trend_score.get('components', {}).get('adx', {}).get('adx', 0),
+        'macd_bullish': trend_score.get('components', {}).get('macd', {}).get('value', 0) > trend_score.get('components', {}).get('macd', {}).get('signal', 0),
+        'williams_r': timing_score.get('components', {}).get('williams', {}).get('value', -50)
     }
 
 
@@ -204,9 +213,9 @@ __all__ = [
     'get_atr_status', 'get_atr_data', 'format_atr_display',
     
     # Trend Score
-    'calculate_macd', 'calculate_macd_score', 'calculate_coppock',
-    'calculate_coppock_score', 'calculate_adx', 'calculate_adx_score',
-    'calculate_ma_alignment_score', 'calculate_trend_score',
+    'calculate_macd', 'calculate_macd_score', 'calculate_rsi_for_trend',
+    'calculate_rsi_zone_score', 'calculate_adx', 'get_dmi_state',
+    'calculate_adx_score', 'calculate_ma_alignment_score', 'calculate_trend_score',
     
     # Timing Score
     'calculate_williams_r', 'calculate_williams_score',

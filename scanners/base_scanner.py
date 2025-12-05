@@ -37,7 +37,7 @@ except ImportError:
     # Fallback for standalone testing
     HISTORY_DAYS = 200
     MIN_HISTORY_DAYS = 50
-    DEFAULT_MIN_MARKET_CAP = 500
+    DEFAULT_MIN_MARKET_CAP = 5000  # $5 Billion in millions
     DATA_FILES_DIR = 'data_files'
     TICKER_FILES = {}
     IBD_FILES = {}
@@ -57,8 +57,10 @@ class ScanResult:
     
     # Key indicators
     psar_gap: float
+    psar_days_in_trend: int  # Days since price crossed PSAR (for sorting Strong Buys)
     prsi_bullish: bool
     prsi_emoji: str
+    prsi_days_since_flip: int  # Days since PRSI changed direction
     obv_bullish: Optional[bool]
     obv_emoji: str
     momentum: int
@@ -67,10 +69,25 @@ class ScanResult:
     trend_score: int
     timing_score: int
     
+    # DMI state for filtering
+    dmi_state: str  # 'bullish', 'bearish', 'choppy'
+    dmi_diff: float  # +DI minus -DI
+    
+    # Individual checkboxes for display
+    dmi_bullish: bool  # +DI > -DI
+    adx_strong: bool   # ADX > 25
+    macd_bullish: bool # MACD > Signal
+    
+    # For Early Buy sorting
+    williams_r: float  # Williams %R value (-100 to 0)
+    
     # Additional info
     warnings: List[str] = field(default_factory=list)
     warnings_emoji: str = ""
     action: str = ""
+    
+    # Raw ADX value for filtering (has default since it's optional)
+    adx_value: float = 0.0
     
     # Optional fields
     source: str = ""
@@ -78,6 +95,7 @@ class ScanResult:
     ibd_url: Optional[str] = None
     market_cap: Optional[float] = None
     volume: Optional[float] = None
+    dividend_yield: Optional[float] = None  # For dividend filtering
     
     # For portfolio mode
     position_value: Optional[float] = None
@@ -238,13 +256,38 @@ class BaseScanner:
             # Get complete signal analysis
             signal = get_complete_signal(indicators)
             
-            # Check if IBD stock
+            # Check if IBD stock and get info
             is_ibd = ticker in self.ibd_tickers
             ibd_url = None
+            dividend_yield = None
+            info = self.fetch_info(ticker)
+            
             if is_ibd:
-                info = self.fetch_info(ticker)
                 exchange = info.get('exchange', 'NASDAQ')
                 ibd_url = get_ibd_url(ticker, self.ibd_stats, exchange)
+            
+            # Get dividend yield - calculate from rate/price for accuracy
+            dividend_yield = None
+            dividend_rate = info.get('dividendRate')  # Annual dividend per share in dollars
+            current_price = indicators['price']
+            
+            if dividend_rate and current_price and current_price > 0:
+                # Calculate yield directly - most reliable method
+                dividend_yield = (dividend_rate / current_price) * 100
+            else:
+                # Fallback to reported dividendYield with heuristic
+                reported_yield = info.get('dividendYield')
+                if reported_yield:
+                    # yfinance returns dividendYield inconsistently:
+                    # - Some stocks: decimal (0.025 = 2.5%)
+                    # - Some stocks: already percentage (2.5 = 2.5%)
+                    # Heuristic: Real dividend yields rarely exceed 20%
+                    if reported_yield < 0.20:
+                        dividend_yield = reported_yield * 100
+                    else:
+                        dividend_yield = reported_yield
+            
+            market_cap = info.get('marketCap')  # In raw dollars
             
             # Build result
             result = ScanResult(
@@ -257,8 +300,10 @@ class BaseScanner:
                 entry_allowed=signal['entry_allowed'],
                 
                 psar_gap=indicators['psar_gap'],
+                psar_days_in_trend=indicators.get('psar_days_in_trend', 0),
                 prsi_bullish=indicators['prsi_bullish'],
                 prsi_emoji='↗️' if indicators['prsi_bullish'] else '↘️',
+                prsi_days_since_flip=indicators.get('prsi', {}).get('days_since_flip', 999),
                 obv_bullish=indicators['obv_bullish'],
                 obv_emoji='🟢' if indicators['obv_bullish'] else ('🔴' if indicators['obv_bullish'] is False else '⚪'),
                 momentum=indicators['momentum_score'],
@@ -266,6 +311,15 @@ class BaseScanner:
                 atr_percent=indicators['atr_percent'],
                 trend_score=indicators['trend_score_value'],
                 timing_score=indicators['timing_score_value'],
+                dmi_state=indicators.get('trend_score', {}).get('dmi_state', 'choppy'),
+                dmi_diff=indicators.get('trend_score', {}).get('dmi_diff', 0),
+                
+                # Checkboxes
+                dmi_bullish=indicators.get('dmi_bullish', False),
+                adx_strong=indicators.get('adx_strong', False),
+                adx_value=indicators.get('adx_value', 0),
+                macd_bullish=indicators.get('macd_bullish', False),
+                williams_r=indicators.get('williams_r', -50),
                 
                 warnings=[w.message for w in signal['warnings']],
                 warnings_emoji=signal['warnings_display'],
@@ -274,6 +328,8 @@ class BaseScanner:
                 source=source,
                 ibd_stock=is_ibd,
                 ibd_url=ibd_url,
+                dividend_yield=dividend_yield,
+                market_cap=market_cap,
                 
                 indicators=indicators,
                 signal_data=signal
@@ -438,17 +494,32 @@ class BaseScanner:
 def load_ticker_file(filepath: str) -> List[str]:
     """Load tickers from a file (one per line or CSV)."""
     tickers = []
-    try:
-        with open(filepath, 'r') as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith('#'):
-                    # Handle CSV format (take first column)
-                    ticker = line.split(',')[0].strip()
-                    if ticker and ticker.upper() != 'SYMBOL':
-                        tickers.append(ticker.upper())
-    except FileNotFoundError:
-        pass
+    
+    # Try different encodings
+    encodings = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']
+    
+    for encoding in encodings:
+        try:
+            with open(filepath, 'r', encoding=encoding) as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        # Handle CSV format (take first column)
+                        ticker = line.split(',')[0].strip()
+                        # Clean up ticker - remove quotes, spaces
+                        ticker = ticker.replace('"', '').replace("'", '').strip()
+                        # Skip headers and empty
+                        if ticker and ticker.upper() not in ['SYMBOL', 'TICKER', 'NAME', '']:
+                            # Only add valid ticker symbols (letters, dots, hyphens)
+                            if ticker.replace('.', '').replace('-', '').isalnum():
+                                tickers.append(ticker.upper())
+            # If we got here without error, break
+            break
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+        except FileNotFoundError:
+            break
+    
     return tickers
 
 

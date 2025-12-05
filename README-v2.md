@@ -12,8 +12,10 @@ This is a major refactor of the market scanner that addresses fundamental flaws 
 
 ### v2 Solutions:
 1. **PRSI as Primary Signal**: PSAR on RSI leads price by 1-3 days
-2. **Split Scores**: Separate Trend Score from Timing Score
-3. **OBV Confirmation**: Volume flow confirms or warns against signals
+2. **Split Scores**: Separate Trend Score/grade
+:q!
+: from Timing Score
+3. **OBV Confirmation**: Volume flow conf/firms or warns against signals
 4. **5% Gap Rule**: Never enter when price is >5% from PSAR (too risky)
 5. **Smart Buy/Short Logic**: Buy pullbacks in uptrends, short rallies in downtrends
 

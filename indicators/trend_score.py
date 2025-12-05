@@ -102,46 +102,58 @@ def calculate_macd_score(df: pd.DataFrame, max_points: int = 30) -> Dict[str, an
     }
 
 
-def calculate_coppock(df: pd.DataFrame) -> pd.Series:
-    """Calculate Coppock Curve."""
+def calculate_rsi_for_trend(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    """Calculate RSI for trend score component."""
     close = df['Close']
+    delta = close.diff()
     
-    roc1 = ((close / close.shift(COPPOCK_ROC1)) - 1) * 100
-    roc2 = ((close / close.shift(COPPOCK_ROC2)) - 1) * 100
+    gain = delta.where(delta > 0, 0.0)
+    loss = (-delta).where(delta < 0, 0.0)
     
-    coppock = (roc1 + roc2).rolling(window=COPPOCK_WMA).mean()
-    return coppock
+    avg_gain = gain.ewm(com=period - 1, min_periods=period).mean()
+    avg_loss = loss.ewm(com=period - 1, min_periods=period).mean()
+    
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    
+    return rsi
 
 
-def calculate_coppock_score(df: pd.DataFrame, max_points: int = 20) -> Dict[str, any]:
+def calculate_rsi_zone_score(df: pd.DataFrame, max_points: int = 20) -> Dict[str, any]:
     """
-    Calculate Coppock component of trend score.
+    Calculate RSI Zone component of trend score.
+    
+    Replaces Coppock. In a bull trend, RSI tends to stay between 40-90.
+    RSI < 50 suggests the trend is weak or broken.
     
     Scoring:
-    - Coppock > 0: 10 pts
-    - Coppock rising: 10 pts
+    - RSI > 60: 20 pts (strong bullish zone)
+    - RSI > 50: 15 pts (bullish zone)
+    - RSI > 40: 10 pts (neutral, trend may be weakening)
+    - RSI <= 40: 0 pts (bearish zone, trend broken)
     """
-    coppock = calculate_coppock(df)
-    current = coppock.iloc[-1]
-    prev = coppock.iloc[-2] if len(df) > 1 else current
+    rsi = calculate_rsi_for_trend(df)
+    current = rsi.iloc[-1]
     
-    score = 0
-    details = []
-    
-    if current > 0:
-        score += 10
-        details.append("Coppock positive (+10)")
-    
-    if current > prev:
-        score += 10
-        details.append("Coppock rising (+10)")
+    if current > 60:
+        score = 20
+        zone = "Strong bullish zone"
+    elif current > 50:
+        score = 15
+        zone = "Bullish zone"
+    elif current > 40:
+        score = 10
+        zone = "Neutral zone"
+    else:
+        score = 0
+        zone = "Bearish zone"
     
     return {
         'score': min(score, max_points),
         'max': max_points,
-        'details': details,
-        'coppock': current,
-        'rising': current > prev
+        'details': [f"RSI {current:.1f}: {zone} (+{score})"],
+        'rsi': current,
+        'zone': zone
     }
 
 
@@ -173,59 +185,98 @@ def calculate_adx(df: pd.DataFrame, period: int = None) -> pd.Series:
     dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
     adx = dx.ewm(span=period, adjust=False).mean()
     
-    return adx
+    return adx, plus_di, minus_di
+
+
+def get_dmi_state(plus_di: float, minus_di: float, tangled_threshold: float = 5.0) -> str:
+    """
+    Determine DMI state based on +DI and -DI relationship.
+    
+    Returns:
+        'bullish': +DI > -DI (bulls control)
+        'bearish': -DI > +DI (bears control)
+        'choppy': Lines tangled (indecision)
+    """
+    diff = plus_di - minus_di
+    if abs(diff) < tangled_threshold:
+        return 'choppy'
+    elif diff > 0:
+        return 'bullish'
+    else:
+        return 'bearish'
 
 
 def calculate_adx_score(df: pd.DataFrame, max_points: int = 25) -> Dict[str, any]:
     """
     Calculate ADX component of trend score.
     
-    Scoring:
-    - ADX > 40: 25 pts (very strong trend)
-    - ADX > 30: 20 pts (strong trend)
-    - ADX > 25: 15 pts (trending)
-    - ADX > 20: 10 pts (weak trend)
-    - ADX <= 20: 5 pts (no trend)
-    """
-    adx = calculate_adx(df)
-    current = adx.iloc[-1]
+    NEW LOGIC: ADX measures strength, DMI measures direction.
+    Only award points if ADX is strong AND +DI > -DI (bullish).
     
-    if current > 40:
-        score = 25
-        strength = "Very strong trend"
-    elif current > 30:
-        score = 20
-        strength = "Strong trend"
-    elif current > ADX_STRONG_TREND:
-        score = 15
-        strength = "Trending"
-    elif current > ADX_WEAK_TREND:
-        score = 10
-        strength = "Weak trend"
+    Scoring:
+    - ADX > 25 AND +DI > -DI: 25 pts (strong bullish trend)
+    - ADX > 25 AND choppy: 10 pts (strong but directionless)
+    - ADX > 25 AND -DI > +DI: 0 pts (strong bearish - bad!)
+    - ADX > 20 AND +DI > -DI: 15 pts (moderate bullish trend)
+    - ADX <= 20: 5 pts (weak/no trend)
+    """
+    adx, plus_di, minus_di = calculate_adx(df)
+    current_adx = adx.iloc[-1]
+    current_plus_di = plus_di.iloc[-1]
+    current_minus_di = minus_di.iloc[-1]
+    
+    dmi_state = get_dmi_state(current_plus_di, current_minus_di)
+    dmi_diff = current_plus_di - current_minus_di
+    
+    # Determine score based on ADX strength AND direction
+    if current_adx > 25:
+        if dmi_state == 'bullish':
+            score = 25
+            strength = "Strong bullish trend"
+        elif dmi_state == 'choppy':
+            score = 10
+            strength = "Strong but choppy"
+        else:  # bearish
+            score = 0
+            strength = "Strong BEARISH trend"
+    elif current_adx > 20:
+        if dmi_state == 'bullish':
+            score = 15
+            strength = "Moderate bullish trend"
+        elif dmi_state == 'choppy':
+            score = 8
+            strength = "Moderate, choppy"
+        else:
+            score = 0
+            strength = "Moderate bearish"
     else:
         score = 5
-        strength = "No clear trend"
+        strength = "Weak/no trend"
     
     return {
         'score': min(score, max_points),
         'max': max_points,
-        'details': [f"ADX {current:.1f}: {strength} (+{score})"],
-        'adx': current,
+        'details': [f"ADX {current_adx:.1f}, +DI {current_plus_di:.1f}, -DI {current_minus_di:.1f}: {strength} (+{score})"],
+        'adx': current_adx,
+        'plus_di': current_plus_di,
+        'minus_di': current_minus_di,
+        'dmi_state': dmi_state,
+        'dmi_diff': dmi_diff,
         'strength': strength
     }
 
 
-def calculate_ma_alignment_score(df: pd.DataFrame, max_points: int = 25) -> Dict[str, any]:
+def calculate_ma_alignment_score(df: pd.DataFrame, max_points: int = 30) -> Dict[str, any]:
     """
     Calculate MA alignment component of trend score.
     
     Perfect bullish alignment: Price > EMA8 > EMA21 > SMA50
     
-    Scoring:
-    - Price > EMA8: 7 pts
-    - EMA8 > EMA21: 6 pts
-    - EMA21 > SMA50: 6 pts
-    - Price > SMA50: 6 pts
+    Scoring (30 pts max):
+    - Price > EMA8: 8 pts
+    - EMA8 > EMA21: 8 pts
+    - EMA21 > SMA50: 7 pts
+    - Price > SMA50: 7 pts
     """
     close = df['Close']
     current_price = close.iloc[-1]
@@ -239,23 +290,23 @@ def calculate_ma_alignment_score(df: pd.DataFrame, max_points: int = 25) -> Dict
     alignment = []
     
     if current_price > ema8:
-        score += 7
-        details.append("Price > EMA8 (+7)")
+        score += 8
+        details.append("Price > EMA8 (+8)")
         alignment.append("P>8")
     
     if ema8 > ema21:
-        score += 6
-        details.append("EMA8 > EMA21 (+6)")
+        score += 8
+        details.append("EMA8 > EMA21 (+8)")
         alignment.append("8>21")
     
     if ema21 > sma50:
-        score += 6
-        details.append("EMA21 > SMA50 (+6)")
+        score += 7
+        details.append("EMA21 > SMA50 (+7)")
         alignment.append("21>50")
     
     if current_price > sma50:
-        score += 6
-        details.append("Price > SMA50 (+6)")
+        score += 7
+        details.append("Price > SMA50 (+7)")
         alignment.append("P>50")
     
     return {
@@ -274,6 +325,12 @@ def calculate_trend_score(df: pd.DataFrame) -> Dict[str, any]:
     """
     Calculate complete Trend Score (0-100).
     
+    NEW WEIGHTS (total 100):
+    - MA Stack: 30 pts (Price > EMA8 > EMA21 > SMA50)
+    - ADX Power: 25 pts (ADX > 25 AND +DI > -DI)
+    - MACD Velocity: 25 pts (MACD > Signal)
+    - RSI Zone: 20 pts (RSI > 50, replaces Coppock)
+    
     Args:
         df: DataFrame with OHLC data
     
@@ -281,14 +338,19 @@ def calculate_trend_score(df: pd.DataFrame) -> Dict[str, any]:
         Dict with total score and component breakdown
     """
     if len(df) < 60:
-        return {'error': 'Insufficient data', 'score': 50}
+        return {'error': 'Insufficient data', 'score': 50, 'dmi_state': 'choppy', 'dmi_diff': 0}
     
-    macd = calculate_macd_score(df, TREND_SCORE_WEIGHTS['macd'])
-    coppock = calculate_coppock_score(df, TREND_SCORE_WEIGHTS['coppock'])
-    adx = calculate_adx_score(df, TREND_SCORE_WEIGHTS['adx'])
-    ma = calculate_ma_alignment_score(df, TREND_SCORE_WEIGHTS['ma_alignment'])
+    # New weights
+    ma = calculate_ma_alignment_score(df, 30)  # Increased to 30
+    adx = calculate_adx_score(df, 25)
+    macd = calculate_macd_score(df, 25)
+    rsi_zone = calculate_rsi_zone_score(df, 20)  # Replaces Coppock
     
-    total_score = macd['score'] + coppock['score'] + adx['score'] + ma['score']
+    total_score = ma['score'] + adx['score'] + macd['score'] + rsi_zone['score']
+    
+    # Get DMI state from ADX calculation
+    dmi_state = adx.get('dmi_state', 'choppy')
+    dmi_diff = adx.get('dmi_diff', 0)
     
     # Determine overall assessment
     if total_score >= TREND_SCORE_STRONG:
@@ -308,11 +370,15 @@ def calculate_trend_score(df: pd.DataFrame) -> Dict[str, any]:
         'emoji': emoji,
         'is_tradeable': total_score >= TREND_SCORE_MIN,
         'is_strong': total_score >= TREND_SCORE_STRONG,
+        'dmi_state': dmi_state,
+        'dmi_diff': dmi_diff,
+        'plus_di': adx.get('plus_di', 0),
+        'minus_di': adx.get('minus_di', 0),
         'components': {
-            'macd': macd,
-            'coppock': coppock,
+            'ma_alignment': ma,
             'adx': adx,
-            'ma_alignment': ma
+            'macd': macd,
+            'rsi_zone': rsi_zone
         },
         'display': f"{total_score}{emoji}"
     }

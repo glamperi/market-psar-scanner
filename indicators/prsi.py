@@ -89,34 +89,55 @@ def calculate_psar_on_series(series: pd.Series, af: float = None, max_af: float 
     if length < 2:
         return psar, trend
     
-    # For RSI, we treat each value as both high and low
-    # (since it's a single line, not OHLC)
-    high = series
-    low = series
+    # Drop NaN values and get valid data
+    valid_series = series.dropna()
+    if len(valid_series) < 2:
+        return psar, trend
     
-    # Initialize - look at first few values to determine initial trend
-    if series.iloc[1] > series.iloc[0]:
-        trend.iloc[0] = 1  # Start bullish
-        psar.iloc[0] = series.iloc[0] - 5  # Start below
-        ep = series.iloc[0]  # Extreme point
+    # Find first valid index
+    first_valid_idx = valid_series.index[0]
+    first_valid_pos = series.index.get_loc(first_valid_idx)
+    
+    # Initialize at first valid position
+    if valid_series.iloc[1] > valid_series.iloc[0]:
+        trend.iloc[first_valid_pos] = 1  # Start bullish
+        psar.iloc[first_valid_pos] = valid_series.iloc[0] - 5  # Start below
+        ep = valid_series.iloc[0]  # Extreme point
     else:
-        trend.iloc[0] = -1  # Start bearish
-        psar.iloc[0] = series.iloc[0] + 5  # Start above
-        ep = series.iloc[0]
+        trend.iloc[first_valid_pos] = -1  # Start bearish
+        psar.iloc[first_valid_pos] = valid_series.iloc[0] + 5  # Start above
+        ep = valid_series.iloc[0]
     
     current_af = af
     
-    for i in range(1, length):
+    # Iterate from first valid position + 1
+    for i in range(first_valid_pos + 1, length):
+        # Skip if current value is NaN
+        if pd.isna(series.iloc[i]):
+            continue
+            
         prev_psar = psar.iloc[i-1]
         prev_trend = trend.iloc[i-1]
+        
+        # Handle if prev values are NaN (shouldn't happen but be safe)
+        if pd.isna(prev_psar) or pd.isna(prev_trend):
+            # Find last valid psar and trend
+            for j in range(i-1, -1, -1):
+                if not pd.isna(psar.iloc[j]) and not pd.isna(trend.iloc[j]):
+                    prev_psar = psar.iloc[j]
+                    prev_trend = trend.iloc[j]
+                    break
+            else:
+                continue  # No valid previous data
         
         if prev_trend == 1:  # Was bullish
             # Calculate new PSAR
             new_psar = prev_psar + current_af * (ep - prev_psar)
             
             # PSAR cannot be above prior values for bullish trend
-            new_psar = min(new_psar, series.iloc[i-1])
-            if i >= 2:
+            if not pd.isna(series.iloc[i-1]):
+                new_psar = min(new_psar, series.iloc[i-1])
+            if i >= 2 and not pd.isna(series.iloc[i-2]):
                 new_psar = min(new_psar, series.iloc[i-2])
             
             # Check for reversal
@@ -140,8 +161,9 @@ def calculate_psar_on_series(series: pd.Series, af: float = None, max_af: float 
             new_psar = prev_psar + current_af * (ep - prev_psar)
             
             # PSAR cannot be below prior values for bearish trend
-            new_psar = max(new_psar, series.iloc[i-1])
-            if i >= 2:
+            if not pd.isna(series.iloc[i-1]):
+                new_psar = max(new_psar, series.iloc[i-1])
+            if i >= 2 and not pd.isna(series.iloc[i-2]):
                 new_psar = max(new_psar, series.iloc[i-2])
             
             # Check for reversal

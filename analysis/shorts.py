@@ -1,0 +1,655 @@
+"""
+Shorts Analysis Module
+
+Analyzes stocks for short opportunities with put spread suggestions.
+Includes short interest data and squeeze risk warnings.
+"""
+
+import yfinance as yf
+from datetime import datetime, timedelta
+from typing import Optional, Dict, List, Tuple
+from dataclasses import dataclass
+import os
+import csv
+
+
+@dataclass
+class ShortCandidate:
+    """Short candidate analysis result."""
+    ticker: str
+    current_price: float
+    
+    # Technical indicators
+    psar_gap: float  # Negative = below PSAR (good for shorts)
+    psar_days_bearish: int  # Days price below PSAR
+    prsi_bearish: bool
+    prsi_days_since_flip: int
+    obv_bearish: bool  # Distribution = good for shorts
+    dmi_bearish: bool  # -DI > +DI
+    adx_value: float
+    williams_r: float  # Near 0 = overbought = good short entry
+    atr_percent: float
+    
+    # Short interest data
+    short_percent: Optional[float] = None  # % of float shorted
+    days_to_cover: Optional[float] = None  # Short ratio
+    squeeze_risk: str = "UNKNOWN"  # LOW, MODERATE, HIGH, UNKNOWN
+    
+    # Scoring
+    short_score: int = 0
+    category: str = ""  # PRIME_SHORT, SHORT_CANDIDATE, NOT_READY, AVOID
+    reasons: List[str] = None
+    warnings: List[str] = None
+    
+    # Put spread suggestion
+    buy_put_strike: Optional[float] = None
+    sell_put_strike: Optional[float] = None
+    put_expiration: Optional[str] = None
+    put_days_to_expiry: Optional[int] = None
+    spread_cost: Optional[float] = None
+    max_profit: Optional[float] = None
+    
+    def __post_init__(self):
+        if self.reasons is None:
+            self.reasons = []
+        if self.warnings is None:
+            self.warnings = []
+
+
+# Load manual short interest overrides from CSV
+def load_short_interest_overrides(filepath=None):
+    """Load manual short interest data from CSV."""
+    overrides = {}
+    
+    # Check multiple possible locations
+    possible_paths = [
+        filepath,
+        'short_interest.csv',
+        'data_files/short_interest.csv',
+        os.path.join(os.path.dirname(__file__), '..', 'data_files', 'short_interest.csv'),
+        os.path.join(os.path.dirname(__file__), '..', 'short_interest.csv'),
+    ]
+    
+    for path in possible_paths:
+        if path and os.path.exists(path):
+            try:
+                with open(path, 'r') as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        if row.get('Symbol') and not row['Symbol'].startswith('#'):
+                            ticker = row['Symbol'].upper().strip()
+                            overrides[ticker] = {
+                                'short_percent': float(row.get('ShortPercent', 0)) if row.get('ShortPercent') else None,
+                                'days_to_cover': float(row.get('DaysToCover', 0)) if row.get('DaysToCover') else None,
+                            }
+                print(f"  Loaded {len(overrides)} short interest overrides from {path}")
+                break
+            except Exception as e:
+                print(f"  Warning: Could not load short interest CSV: {e}")
+    
+    return overrides
+
+
+# Global overrides cache
+_short_interest_overrides = None
+
+
+def get_short_interest_overrides():
+    """Get cached short interest overrides."""
+    global _short_interest_overrides
+    if _short_interest_overrides is None:
+        _short_interest_overrides = load_short_interest_overrides()
+    return _short_interest_overrides
+
+
+def get_short_interest(ticker: str, info: dict = None) -> Tuple[Optional[float], Optional[float]]:
+    """
+    Get short interest data for a ticker.
+    
+    Returns:
+        Tuple of (short_percent, days_to_cover)
+    """
+    # Check overrides first
+    overrides = get_short_interest_overrides()
+    if ticker.upper() in overrides:
+        data = overrides[ticker.upper()]
+        return data.get('short_percent'), data.get('days_to_cover')
+    
+    # Try yfinance
+    if info is None:
+        try:
+            stock = yf.Ticker(ticker)
+            info = stock.info
+        except:
+            return None, None
+    
+    short_percent = info.get('shortPercentOfFloat')
+    if short_percent is not None:
+        short_percent = short_percent * 100  # Convert decimal to percentage
+    
+    days_to_cover = info.get('shortRatio')
+    
+    return short_percent, days_to_cover
+
+
+def get_squeeze_risk(short_percent: Optional[float]) -> Tuple[str, str]:
+    """
+    Determine squeeze risk level.
+    
+    Returns:
+        Tuple of (risk_level, emoji)
+    """
+    if short_percent is None:
+        return 'UNKNOWN', '❓'
+    elif short_percent > 25:
+        return 'HIGH', '🔴'
+    elif short_percent > 15:
+        return 'MODERATE', '🟡'
+    else:
+        return 'LOW', '🟢'
+
+
+def calculate_short_score(
+    psar_gap: float,
+    psar_days_bearish: int,
+    prsi_bearish: bool,
+    prsi_days_since_flip: int,
+    obv_bearish: bool,
+    dmi_bearish: bool,
+    adx_value: float,
+    williams_r: float,
+    atr_percent: float,
+    short_percent: Optional[float] = None,
+) -> Tuple[int, List[str], List[str]]:
+    """
+    Calculate short score (0-100) and return reasons/warnings.
+    
+    Higher score = better short candidate.
+    """
+    score = 0
+    reasons = []
+    warnings = []
+    
+    # PRSI Bearish (most important - leads price)
+    if prsi_bearish:
+        score += 25
+        reasons.append(f"PRSI bearish ({prsi_days_since_flip}d)")
+    else:
+        score -= 30
+        warnings.append("PRSI bullish - NOT a short")
+    
+    # Price vs PSAR
+    if psar_gap < 0:
+        # Below PSAR - confirmed downtrend
+        if psar_gap < -5:
+            score += 20
+            reasons.append(f"Deep below PSAR ({psar_gap:.1f}%)")
+        else:
+            score += 15
+            reasons.append(f"Below PSAR ({psar_gap:.1f}%)")
+        
+        # Freshness bonus
+        if psar_days_bearish <= 5:
+            score += 10
+            reasons.append(f"Fresh breakdown ({psar_days_bearish}d)")
+    else:
+        # Still above PSAR
+        if prsi_bearish:
+            score += 5  # Early short potential
+            warnings.append(f"Price still above PSAR (+{psar_gap:.1f}%)")
+        else:
+            score -= 20
+            warnings.append("Above PSAR - avoid")
+    
+    # OBV Distribution
+    if obv_bearish:
+        score += 15
+        reasons.append("OBV distribution")
+    else:
+        warnings.append("OBV accumulation")
+    
+    # DMI Bearish
+    if dmi_bearish:
+        score += 10
+        reasons.append("DMI bearish (-DI > +DI)")
+    
+    # ADX Trend Strength
+    if adx_value >= 25:
+        score += 10
+        reasons.append(f"Strong trend (ADX {adx_value:.0f})")
+    elif adx_value < 15:
+        score -= 5
+        warnings.append(f"Weak trend (ADX {adx_value:.0f})")
+    
+    # Williams %R - Overbought = good short entry
+    if williams_r > -20:
+        score += 15
+        reasons.append(f"Overbought (Will%R {williams_r:.0f})")
+    elif williams_r < -80:
+        score -= 15
+        warnings.append(f"Oversold (Will%R {williams_r:.0f}) - bounce risk")
+    
+    # ATR Volatility - want high ATR for shorts
+    if atr_percent >= 5:
+        score += 10
+        reasons.append(f"High volatility (ATR {atr_percent:.1f}%)")
+    elif atr_percent < 2:
+        score -= 5
+        warnings.append(f"Low volatility (ATR {atr_percent:.1f}%)")
+    
+    # Short Interest / Squeeze Risk
+    if short_percent is not None:
+        if short_percent > 25:
+            score -= 25
+            warnings.append(f"⚠️ HIGH squeeze risk (SI {short_percent:.1f}%)")
+        elif short_percent > 15:
+            score -= 10
+            warnings.append(f"Elevated SI ({short_percent:.1f}%)")
+        elif short_percent < 5:
+            score += 5
+            reasons.append(f"Low SI ({short_percent:.1f}%)")
+    
+    # Clamp score
+    score = max(0, min(100, score))
+    
+    return score, reasons, warnings
+
+
+def categorize_short(score: int, prsi_bearish: bool, psar_gap: float, psar_days: int, williams_r: float = -50) -> str:
+    """
+    Categorize short candidate based on score and signals.
+    
+    STRICT criteria to avoid too many false positives:
+    - PRIME_SHORT: High score, confirmed breakdown, overbought
+    - SHORT_CANDIDATE: Good score, below PSAR
+    - NOT_READY: PRSI bearish but waiting for confirmation
+    - AVOID: Everything else
+    """
+    if not prsi_bearish:
+        return "AVOID"
+    
+    # PRIME_SHORT: Must be high conviction
+    # - Score >= 70
+    # - Price below PSAR (confirmed breakdown)
+    # - Fresh signal (≤3 days)
+    # - Williams %R not oversold (> -70 means not bouncing yet)
+    if score >= 70 and psar_gap < 0 and psar_days <= 3 and williams_r > -70:
+        return "PRIME_SHORT"
+    
+    # SHORT_CANDIDATE: Good setup but less urgent
+    # - Score >= 60
+    # - Price below PSAR
+    # - Not deeply oversold
+    elif score >= 60 and psar_gap < 0 and williams_r > -80:
+        return "SHORT_CANDIDATE"
+    
+    # NOT_READY: PRSI bearish but price still above PSAR or oversold
+    elif score >= 45 and prsi_bearish:
+        return "NOT_READY"
+    
+    else:
+        return "AVOID"
+
+
+def get_put_spread_recommendation(
+    ticker: str,
+    current_price: float,
+    atr_percent: float,
+    min_days: int = 14,
+    max_days: int = 28
+) -> Optional[Dict]:
+    """
+    Get put spread recommendation for a short position.
+    
+    Strategy: Buy higher strike put (delta ~0.40), sell lower strike put (delta ~0.15)
+    Expiration: 2-4 weeks
+    """
+    try:
+        stock = yf.Ticker(ticker)
+        expirations = stock.options
+        if not expirations:
+            return None
+        
+        today = datetime.now().date()
+        target_exp = None
+        
+        # Find expiration in target range
+        for exp_str in expirations:
+            exp_date = datetime.strptime(exp_str, '%Y-%m-%d').date()
+            days_to_exp = (exp_date - today).days
+            if min_days <= days_to_exp <= max_days:
+                target_exp = exp_str
+                break
+        
+        if not target_exp:
+            # Fallback to first available >= min_days
+            for exp_str in expirations:
+                exp_date = datetime.strptime(exp_str, '%Y-%m-%d').date()
+                if (exp_date - today).days >= min_days:
+                    target_exp = exp_str
+                    break
+        
+        if not target_exp:
+            return None
+        
+        chain = stock.option_chain(target_exp)
+        puts = chain.puts
+        if puts.empty:
+            return None
+        
+        # Filter to reasonable strikes
+        # Buy put: slightly ITM or ATM (strike near or above current price)
+        # Sell put: OTM (strike below current price)
+        
+        # Buy put target: delta ~0.40 = roughly ATM or slightly ITM
+        buy_target_strike = current_price * 1.05  # 5% ITM
+        
+        # Sell put target: delta ~0.15 = roughly 10-15% OTM
+        sell_target_strike = current_price * 0.85  # 15% OTM
+        
+        # Find closest strikes
+        puts['buy_diff'] = abs(puts['strike'] - buy_target_strike)
+        puts['sell_diff'] = abs(puts['strike'] - sell_target_strike)
+        
+        buy_put = puts.loc[puts['buy_diff'].idxmin()]
+        sell_put = puts.loc[puts['sell_diff'].idxmin()]
+        
+        buy_strike = buy_put['strike']
+        sell_strike = sell_put['strike']
+        
+        # Make sure buy strike > sell strike
+        if buy_strike <= sell_strike:
+            # Adjust - buy should be higher strike
+            itm_puts = puts[puts['strike'] > current_price]
+            otm_puts = puts[puts['strike'] < current_price * 0.90]
+            
+            if not itm_puts.empty and not otm_puts.empty:
+                buy_strike = itm_puts['strike'].min()
+                sell_strike = otm_puts['strike'].max()
+                buy_put = puts[puts['strike'] == buy_strike].iloc[0]
+                sell_put = puts[puts['strike'] == sell_strike].iloc[0]
+        
+        # Calculate costs
+        buy_bid = buy_put.get('bid', 0) or 0
+        buy_ask = buy_put.get('ask', 0) or 0
+        buy_mid = (buy_bid + buy_ask) / 2 if buy_bid > 0 and buy_ask > 0 else buy_put.get('lastPrice', 0)
+        
+        sell_bid = sell_put.get('bid', 0) or 0
+        sell_ask = sell_put.get('ask', 0) or 0
+        sell_mid = (sell_bid + sell_ask) / 2 if sell_bid > 0 and sell_ask > 0 else sell_put.get('lastPrice', 0)
+        
+        spread_cost = buy_mid - sell_mid  # Net debit
+        max_profit = buy_strike - sell_strike - spread_cost  # Max profit at expiration
+        
+        exp_date = datetime.strptime(target_exp, '%Y-%m-%d').date()
+        days_to_exp = (exp_date - today).days
+        
+        return {
+            'buy_strike': buy_strike,
+            'sell_strike': sell_strike,
+            'expiration': target_exp,
+            'days_to_expiry': days_to_exp,
+            'spread_cost': spread_cost,
+            'max_profit': max_profit,
+            'buy_premium': buy_mid,
+            'sell_premium': sell_mid,
+        }
+        
+    except Exception as e:
+        print(f"    Warning: Could not get put spread for {ticker}: {e}")
+        return None
+
+
+def analyze_short_candidate(
+    ticker: str,
+    current_price: float,
+    psar_gap: float,
+    psar_days_bearish: int,
+    prsi_bearish: bool,
+    prsi_days_since_flip: int,
+    obv_bearish: bool,
+    dmi_bearish: bool,
+    adx_value: float,
+    williams_r: float,
+    atr_percent: float,
+    info: dict = None,
+    fetch_options: bool = True
+) -> ShortCandidate:
+    """
+    Analyze a stock as a short candidate.
+    """
+    # Get short interest
+    short_percent, days_to_cover = get_short_interest(ticker, info)
+    squeeze_risk, _ = get_squeeze_risk(short_percent)
+    
+    # Calculate score
+    score, reasons, warnings = calculate_short_score(
+        psar_gap=psar_gap,
+        psar_days_bearish=psar_days_bearish,
+        prsi_bearish=prsi_bearish,
+        prsi_days_since_flip=prsi_days_since_flip,
+        obv_bearish=obv_bearish,
+        dmi_bearish=dmi_bearish,
+        adx_value=adx_value,
+        williams_r=williams_r,
+        atr_percent=atr_percent,
+        short_percent=short_percent,
+    )
+    
+    # Categorize - pass williams_r for oversold check
+    category = categorize_short(score, prsi_bearish, psar_gap, psar_days_bearish, williams_r)
+    
+    candidate = ShortCandidate(
+        ticker=ticker,
+        current_price=current_price,
+        psar_gap=psar_gap,
+        psar_days_bearish=psar_days_bearish,
+        prsi_bearish=prsi_bearish,
+        prsi_days_since_flip=prsi_days_since_flip,
+        obv_bearish=obv_bearish,
+        dmi_bearish=dmi_bearish,
+        adx_value=adx_value,
+        williams_r=williams_r,
+        atr_percent=atr_percent,
+        short_percent=short_percent,
+        days_to_cover=days_to_cover,
+        squeeze_risk=squeeze_risk,
+        short_score=score,
+        category=category,
+        reasons=reasons,
+        warnings=warnings,
+    )
+    
+    # Get put spread if good candidate
+    if fetch_options and category in ['PRIME_SHORT', 'SHORT_CANDIDATE']:
+        put_data = get_put_spread_recommendation(ticker, current_price, atr_percent)
+        if put_data:
+            candidate.buy_put_strike = put_data['buy_strike']
+            candidate.sell_put_strike = put_data['sell_strike']
+            candidate.put_expiration = put_data['expiration']
+            candidate.put_days_to_expiry = put_data['days_to_expiry']
+            candidate.spread_cost = put_data['spread_cost']
+            candidate.max_profit = put_data['max_profit']
+    
+    return candidate
+
+
+def build_shorts_html_section(candidates: List[ShortCandidate], title: str, section_class: str) -> str:
+    """Build HTML table for a shorts section."""
+    if not candidates:
+        return ""
+    
+    html = f"""
+    <div style='background-color:{section_class}; color:white; padding:12px; margin:20px 0 10px 0; font-size:14px; font-weight:bold;'>
+        {title} ({len(candidates)} stocks)
+    </div>
+    <table>
+        <tr style='background-color:{section_class}; color:white;'>
+            <th>Ticker</th><th>Price</th><th>PSAR%</th><th>Days</th><th>Score</th>
+            <th>PRSI</th><th>OBV</th><th>DMI</th><th>ADX</th><th>Will%R</th><th>ATR%</th>
+            <th>SI%</th><th>Squeeze</th>
+            <th>Buy Put</th><th>Sell Put</th><th>Exp</th><th>Cost</th>
+        </tr>
+    """
+    
+    for c in candidates:
+        prsi_icon = "↘️" if c.prsi_bearish else "↗️"
+        obv_icon = "🔴" if c.obv_bearish else "🟢"
+        dmi_icon = "✓" if c.dmi_bearish else "✗"
+        
+        # Williams color
+        if c.williams_r > -20:
+            wr_color = '#e74c3c'  # Red = overbought = good for shorts
+        elif c.williams_r < -80:
+            wr_color = '#27ae60'  # Green = oversold = bad for shorts
+        else:
+            wr_color = '#f39c12'
+        
+        # Squeeze risk color
+        if c.squeeze_risk == 'HIGH':
+            sq_icon = '🔴'
+        elif c.squeeze_risk == 'MODERATE':
+            sq_icon = '🟡'
+        elif c.squeeze_risk == 'LOW':
+            sq_icon = '🟢'
+        else:
+            sq_icon = '❓'
+        
+        si_display = f"{c.short_percent:.1f}%" if c.short_percent else "-"
+        
+        buy_put = f"${c.buy_put_strike:.0f}" if c.buy_put_strike else "-"
+        sell_put = f"${c.sell_put_strike:.0f}" if c.sell_put_strike else "-"
+        exp = c.put_expiration if c.put_expiration else "-"
+        cost = f"${c.spread_cost:.2f}" if c.spread_cost else "-"
+        
+        # Score color
+        if c.short_score >= 60:
+            score_color = '#27ae60'
+        elif c.short_score >= 40:
+            score_color = '#f39c12'
+        else:
+            score_color = '#e74c3c'
+        
+        html += f"""
+        <tr>
+            <td><strong>{c.ticker}</strong></td>
+            <td>${c.current_price:.2f}</td>
+            <td style='color:{"#e74c3c" if c.psar_gap < 0 else "#27ae60"};'>{c.psar_gap:+.1f}%</td>
+            <td>{c.psar_days_bearish}</td>
+            <td style='color:{score_color}; font-weight:bold;'>{c.short_score}</td>
+            <td>{prsi_icon}</td>
+            <td>{obv_icon}</td>
+            <td>{dmi_icon}</td>
+            <td>{c.adx_value:.0f}</td>
+            <td style='color:{wr_color};'>{c.williams_r:.0f}</td>
+            <td>{c.atr_percent:.1f}%</td>
+            <td>{si_display}</td>
+            <td>{sq_icon}</td>
+            <td>{buy_put}</td>
+            <td>{sell_put}</td>
+            <td>{exp}</td>
+            <td>{cost}</td>
+        </tr>"""
+    
+    html += "</table>"
+    return html
+
+
+def build_avoid_section(candidates: List[ShortCandidate]) -> str:
+    """Build HTML section for stocks to avoid shorting."""
+    if not candidates:
+        return ""
+    
+    html = """
+    <div style='background-color:#95a5a6; color:white; padding:12px; margin:20px 0 10px 0; font-size:14px; font-weight:bold;'>
+        ❌ AVOID - Not Short Candidates ({} stocks)
+    </div>
+    <p style='color:#666; font-size:11px; margin:5px 0;'>These stocks do not meet short criteria. Reasons listed below.</p>
+    <table>
+        <tr style='background-color:#95a5a6; color:white;'>
+            <th>Ticker</th><th>Price</th><th>PSAR%</th><th>Score</th><th>Why Avoid</th>
+        </tr>
+    """.format(len(candidates))
+    
+    for c in candidates:
+        warnings_str = "; ".join(c.warnings[:3]) if c.warnings else "No clear short signal"
+        
+        html += f"""
+        <tr>
+            <td><strong>{c.ticker}</strong></td>
+            <td>${c.current_price:.2f}</td>
+            <td style='color:{"#e74c3c" if c.psar_gap < 0 else "#27ae60"};'>{c.psar_gap:+.1f}%</td>
+            <td>{c.short_score}</td>
+            <td style='color:#e74c3c;'>{warnings_str}</td>
+        </tr>"""
+    
+    html += "</table>"
+    return html
+
+
+def build_shorts_report_html(
+    short_candidates: List[ShortCandidate],
+    mode: str = "Shorts",
+    total_scanned: int = 0
+) -> str:
+    """Build complete HTML report for shorts analysis - single list only."""
+    
+    html = """
+    <html>
+    <head>
+        <style>
+            body { font-family: Arial, sans-serif; font-size: 12px; }
+            table { border-collapse: collapse; width: 100%; margin: 10px 0; }
+            th { padding: 8px; text-align: left; font-size: 11px; }
+            td { padding: 6px; border-bottom: 1px solid #ddd; font-size: 11px; }
+            tr:hover { background-color: #f5f5f5; }
+        </style>
+    </head>
+    <body>
+    """
+    
+    html += f"""
+    <h2>🐻 Short Candidates - {datetime.now().strftime('%Y-%m-%d %H:%M')}</h2>
+    <p>Mode: {mode} | Scanned: {total_scanned} | Showing: {len(short_candidates)} with tradeable options</p>
+    """
+    
+    # Summary
+    html += f"""
+    <div style='background-color:#f5f5f5; padding:15px; margin:10px 0; border-left:4px solid #c0392b;'>
+        <strong>🔴 {len(short_candidates)} SHORT CANDIDATES</strong> - All have tradeable put options<br>
+        <span style='font-size:11px; color:#666;'>Sorted by short score (highest conviction first)</span>
+    </div>
+    """
+    
+    # Guide
+    html += """
+    <div style='font-size:10px; color:#666; padding:10px; background:#fff3cd; margin:10px 0;'>
+        <strong>Score Components:</strong> PRSI bearish (+25) | Below PSAR (+15-20) | Fresh signal (+10) | 
+        OBV distribution (+15) | DMI bearish (+10) | Overbought Will%R (+15) | High ATR (+10) | Low SI (+5)<br>
+        <strong>Penalties:</strong> PRSI bullish (-30) | Above PSAR (-20) | Oversold Will%R (-15) | High SI squeeze risk (-25)
+    </div>
+    """
+    
+    # Single list of short candidates with options
+    if short_candidates:
+        html += build_shorts_html_section(short_candidates, f"🔴 SHORT CANDIDATES ({len(short_candidates)} stocks)", "#c0392b")
+    else:
+        html += """
+        <div style='padding:20px; background:#f9f9f9; text-align:center; color:#666;'>
+            No short candidates found with tradeable options.
+        </div>
+        """
+    
+    # Legend
+    html += """
+    <div style='font-size:10px; color:#666; margin-top:20px; padding:10px; background:#f9f9f9;'>
+        <strong>Legend:</strong><br>
+        PRSI: ↘️ Bearish | OBV: 🔴 Distribution 🟢 Accumulation<br>
+        Squeeze Risk: 🟢 Low (<5% SI) 🟡 Moderate (15-25%) 🔴 High (>25%)<br>
+        Will%R: Red = Overbought (good entry) | Green = Oversold (bounce risk)<br>
+        <strong>Put Spread Strategy:</strong> Buy higher strike put, sell lower strike put. Max loss = spread cost. Max profit = strike diff - cost.
+    </div>
+    """
+    
+    html += "</body></html>"
+    return html

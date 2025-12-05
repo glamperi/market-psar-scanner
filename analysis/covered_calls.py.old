@@ -1,0 +1,401 @@
+"""
+Covered Call Analysis Module
+
+Analyzes high-ATR stocks for covered call opportunities.
+Uses Williams %R trajectory, ATR, and options data to suggest strikes.
+"""
+
+import yfinance as yf
+from datetime import datetime, timedelta
+from typing import Optional, Dict, List, Tuple
+from dataclasses import dataclass
+import math
+
+
+@dataclass
+class CoveredCallSuggestion:
+    """Suggested covered call parameters."""
+    ticker: str
+    current_price: float
+    atr_percent: float
+    williams_r: float
+    adx_value: float
+    
+    # Target analysis
+    estimated_ceiling: float  # Estimated price ceiling based on momentum
+    upside_potential: float   # Percentage upside to ceiling
+    
+    # Option suggestion
+    suggested_strike: float
+    strike_otm_percent: float  # How far OTM the strike is
+    expiration_date: str
+    days_to_expiry: int
+    
+    # Greeks (if available from options chain)
+    delta: Optional[float] = None
+    premium: Optional[float] = None
+    premium_yield: Optional[float] = None  # Premium as % of stock price
+    
+    # Signal info
+    signal_type: str = ""  # "Strong Buy", "Buy", "Hold"
+
+
+def estimate_price_ceiling(
+    current_price: float,
+    atr_percent: float,
+    williams_r: float,
+    adx_value: float,
+    days_out: int = 15
+) -> Tuple[float, float]:
+    """
+    Estimate the likely price ceiling based on technical indicators.
+    
+    Logic:
+    - Williams %R: -100 (oversold) to 0 (overbought)
+    - "Room to run" = how far from overbought (-20 to 0 zone)
+    - ATR gives us volatility, scaled by sqrt(time) for multi-day estimate
+    - ADX strength multiplier: stronger trends can extend further
+    
+    Returns:
+        Tuple of (estimated_ceiling_price, upside_percent)
+    """
+    # Williams %R room to run (0 to 1 scale)
+    # At -100, full room (1.0). At -20, almost none (0.1). At 0, none (0).
+    if williams_r <= -80:
+        williams_room = 1.0  # Very oversold, lots of room
+    elif williams_r <= -50:
+        williams_room = 0.7  # Oversold, good room
+    elif williams_r <= -20:
+        williams_room = 0.4  # Neutral, some room
+    else:
+        williams_room = 0.15  # Overbought, limited room
+    
+    # ADX trend strength multiplier
+    # ADX < 20: weak trend (0.8x), 20-30: moderate (1.0x), >30: strong (1.2x)
+    if adx_value < 15:
+        adx_mult = 0.7
+    elif adx_value < 25:
+        adx_mult = 0.9
+    elif adx_value < 35:
+        adx_mult = 1.1
+    else:
+        adx_mult = 1.3  # Very strong trend
+    
+    # Base expected move using ATR and square root of time
+    # ATR is daily volatility, scale by sqrt(days) for period estimate
+    sqrt_days = math.sqrt(days_out)
+    base_move_pct = atr_percent * sqrt_days
+    
+    # Adjusted move based on Williams room and ADX strength
+    adjusted_move_pct = base_move_pct * williams_room * adx_mult
+    
+    # Cap at reasonable maximum (30% in 3 weeks is extreme)
+    adjusted_move_pct = min(adjusted_move_pct, 30.0)
+    
+    ceiling_price = current_price * (1 + adjusted_move_pct / 100)
+    
+    return ceiling_price, adjusted_move_pct
+
+
+def get_option_chain_data(
+    ticker: str,
+    target_delta: float = 0.10,
+    min_days: int = 10,
+    max_days: int = 30
+) -> Optional[Dict]:
+    """
+    Fetch options chain and find strike closest to target delta.
+    
+    Args:
+        ticker: Stock ticker
+        target_delta: Target delta (0.10 = delta 10)
+        min_days: Minimum days to expiration
+        max_days: Maximum days to expiration
+        
+    Returns:
+        Dict with strike, expiration, delta, premium info or None
+    """
+    try:
+        stock = yf.Ticker(ticker)
+        
+        # Get available expiration dates
+        expirations = stock.options
+        if not expirations:
+            return None
+        
+        today = datetime.now().date()
+        
+        # Find expiration in our target range (2-4 weeks)
+        target_exp = None
+        for exp_str in expirations:
+            exp_date = datetime.strptime(exp_str, '%Y-%m-%d').date()
+            days_to_exp = (exp_date - today).days
+            
+            if min_days <= days_to_exp <= max_days:
+                target_exp = exp_str
+                break
+        
+        if not target_exp:
+            # Fall back to closest available
+            for exp_str in expirations:
+                exp_date = datetime.strptime(exp_str, '%Y-%m-%d').date()
+                days_to_exp = (exp_date - today).days
+                if days_to_exp >= min_days:
+                    target_exp = exp_str
+                    break
+        
+        if not target_exp:
+            return None
+        
+        # Get the options chain for this expiration
+        chain = stock.option_chain(target_exp)
+        calls = chain.calls
+        
+        if calls.empty:
+            return None
+        
+        # Get current stock price
+        current_price = stock.info.get('regularMarketPrice') or stock.info.get('previousClose')
+        if not current_price:
+            return None
+        
+        # Filter to OTM calls only
+        otm_calls = calls[calls['strike'] > current_price].copy()
+        
+        if otm_calls.empty:
+            return None
+        
+        # Find strike closest to target delta
+        # Delta is typically in 'delta' column, but might need to check
+        if 'delta' in otm_calls.columns:
+            # Has delta data - find closest to target
+            otm_calls['delta_diff'] = abs(otm_calls['delta'] - target_delta)
+            best_row = otm_calls.loc[otm_calls['delta_diff'].idxmin()]
+            delta = best_row.get('delta')
+        else:
+            # No delta data - estimate by position in chain
+            # Typically want strike ~1.5-2 ATR moves away for delta 10
+            # Just pick a strike that's 8-12% OTM as approximation
+            otm_calls['otm_pct'] = (otm_calls['strike'] - current_price) / current_price * 100
+            
+            # Target 8-12% OTM for ~delta 10
+            otm_calls['target_diff'] = abs(otm_calls['otm_pct'] - 10)
+            best_row = otm_calls.loc[otm_calls['target_diff'].idxmin()]
+            delta = None  # Unknown
+        
+        strike = best_row['strike']
+        
+        # Get premium (use mid price if available, else last)
+        bid = best_row.get('bid', 0) or 0
+        ask = best_row.get('ask', 0) or 0
+        if bid > 0 and ask > 0:
+            premium = (bid + ask) / 2
+        else:
+            premium = best_row.get('lastPrice', 0) or 0
+        
+        exp_date = datetime.strptime(target_exp, '%Y-%m-%d').date()
+        days_to_exp = (exp_date - today).days
+        
+        return {
+            'strike': strike,
+            'expiration': target_exp,
+            'days_to_expiry': days_to_exp,
+            'delta': delta,
+            'premium': premium,
+            'premium_yield': (premium / current_price * 100) if current_price > 0 else 0,
+            'otm_percent': (strike - current_price) / current_price * 100,
+            'bid': bid,
+            'ask': ask,
+            'volume': best_row.get('volume', 0),
+            'open_interest': best_row.get('openInterest', 0)
+        }
+        
+    except Exception as e:
+        print(f"    Warning: Could not fetch options for {ticker}: {e}")
+        return None
+
+
+def analyze_covered_call(
+    ticker: str,
+    current_price: float,
+    atr_percent: float,
+    williams_r: float,
+    adx_value: float,
+    signal_type: str = "",
+    fetch_options: bool = True
+) -> Optional[CoveredCallSuggestion]:
+    """
+    Analyze a stock for covered call opportunity.
+    
+    Args:
+        ticker: Stock ticker
+        current_price: Current stock price
+        atr_percent: ATR as percentage of price
+        williams_r: Williams %R value (-100 to 0)
+        adx_value: ADX value
+        signal_type: "Strong Buy", "Buy", "Hold", etc.
+        fetch_options: Whether to fetch real options data
+        
+    Returns:
+        CoveredCallSuggestion or None if not suitable
+    """
+    # Target 3 weeks out (15 trading days)
+    days_out = 15
+    
+    # Estimate price ceiling
+    ceiling, upside_pct = estimate_price_ceiling(
+        current_price, atr_percent, williams_r, adx_value, days_out
+    )
+    
+    # Add 10% buffer above ceiling for strike
+    # This gives us ~delta 10-15 typically
+    strike_buffer = 1.10
+    suggested_strike = ceiling * strike_buffer
+    
+    # Round strike to standard option increments
+    if suggested_strike < 50:
+        suggested_strike = round(suggested_strike * 2) / 2  # $0.50 increments
+    elif suggested_strike < 200:
+        suggested_strike = round(suggested_strike)  # $1 increments
+    else:
+        suggested_strike = round(suggested_strike / 5) * 5  # $5 increments
+    
+    strike_otm = (suggested_strike - current_price) / current_price * 100
+    
+    # Default expiration (3 weeks from now, on Friday)
+    today = datetime.now()
+    days_to_friday = (4 - today.weekday()) % 7
+    if days_to_friday == 0:
+        days_to_friday = 7
+    target_friday = today + timedelta(days=days_to_friday + 14)  # 2-3 weeks out
+    default_expiration = target_friday.strftime('%Y-%m-%d')
+    
+    suggestion = CoveredCallSuggestion(
+        ticker=ticker,
+        current_price=current_price,
+        atr_percent=atr_percent,
+        williams_r=williams_r,
+        adx_value=adx_value,
+        estimated_ceiling=ceiling,
+        upside_potential=upside_pct,
+        suggested_strike=suggested_strike,
+        strike_otm_percent=strike_otm,
+        expiration_date=default_expiration,
+        days_to_expiry=21,
+        signal_type=signal_type
+    )
+    
+    # Try to get real options data
+    if fetch_options:
+        options_data = get_option_chain_data(ticker, target_delta=0.12)
+        
+        if options_data:
+            # Update with real data
+            suggestion.suggested_strike = options_data['strike']
+            suggestion.strike_otm_percent = options_data['otm_percent']
+            suggestion.expiration_date = options_data['expiration']
+            suggestion.days_to_expiry = options_data['days_to_expiry']
+            suggestion.delta = options_data['delta']
+            suggestion.premium = options_data['premium']
+            suggestion.premium_yield = options_data['premium_yield']
+    
+    return suggestion
+
+
+def build_covered_call_section(suggestions: List[CoveredCallSuggestion]) -> str:
+    """
+    Build HTML section for covered call suggestions.
+    
+    Args:
+        suggestions: List of CoveredCallSuggestion objects
+        
+    Returns:
+        HTML string for the section
+    """
+    if not suggestions:
+        return ""
+    
+    html = """
+    <div class='section-coveredcall' style='background-color:#8e44ad; color:white; padding:12px; margin:20px 0 10px 0; font-size:14px; font-weight:bold;'>
+        📞 COVERED CALL CANDIDATES - High Volatility Stocks
+    </div>
+    <p style='color:#8e44ad; font-size:11px; margin:5px 0;'>
+        High ATR stocks suitable for covered calls. Strikes selected targeting ~Delta 10-15 with 2-4 week expiration.
+        <br>Ceiling estimate uses Williams %R trajectory + ATR volatility + ADX trend strength.
+    </p>
+    
+    <table>
+        <tr style='background-color:#8e44ad; color:white;'>
+            <th>Ticker</th>
+            <th>Price</th>
+            <th>ATR%</th>
+            <th>Will%R</th>
+            <th>ADX</th>
+            <th>Est.Ceiling</th>
+            <th>Strike</th>
+            <th>OTM%</th>
+            <th>Expiry</th>
+            <th>Delta</th>
+            <th>Premium</th>
+            <th>Yield</th>
+        </tr>
+    """
+    
+    for s in suggestions:
+        # Color code by signal type
+        if 'Strong' in s.signal_type:
+            signal_color = '#1e8449'
+        elif 'Buy' in s.signal_type:
+            signal_color = '#27ae60'
+        elif 'Hold' in s.signal_type:
+            signal_color = '#f39c12'
+        else:
+            signal_color = '#666'
+        
+        # Williams color (more negative = more oversold = more room)
+        if s.williams_r <= -80:
+            williams_color = '#27ae60'  # Very oversold - green
+        elif s.williams_r <= -50:
+            williams_color = '#2ecc71'  # Oversold
+        elif s.williams_r <= -20:
+            williams_color = '#f39c12'  # Neutral - yellow
+        else:
+            williams_color = '#e74c3c'  # Overbought - red
+        
+        delta_display = f"{s.delta:.2f}" if s.delta else "~0.12"
+        premium_display = f"${s.premium:.2f}" if s.premium else "-"
+        yield_display = f"{s.premium_yield:.1f}%" if s.premium_yield else "-"
+        
+        html += f"""
+        <tr>
+            <td><strong>{s.ticker}</strong></td>
+            <td>${s.current_price:.2f}</td>
+            <td style='color:#e74c3c; font-weight:bold;'>{s.atr_percent:.1f}%</td>
+            <td style='color:{williams_color};'>{s.williams_r:.0f}</td>
+            <td>{s.adx_value:.0f}</td>
+            <td style='color:#27ae60;'>${s.estimated_ceiling:.2f}</td>
+            <td style='font-weight:bold;'>${s.suggested_strike:.2f}</td>
+            <td>{s.strike_otm_percent:.1f}%</td>
+            <td>{s.expiration_date}</td>
+            <td>{delta_display}</td>
+            <td>{premium_display}</td>
+            <td style='color:#27ae60;'>{yield_display}</td>
+        </tr>
+        """
+    
+    html += "</table>"
+    
+    # Add explanation note
+    html += """
+    <div style='font-size:10px; color:#666; margin-top:10px; padding:8px; background:#f9f9f9; border-left:3px solid #8e44ad;'>
+        <strong>How to read:</strong><br>
+        • <strong>Est.Ceiling</strong>: Estimated price peak based on Williams %R room to run × ATR volatility × ADX trend strength<br>
+        • <strong>Strike</strong>: Suggested call strike (targeting delta ~0.10-0.15 = ~10-15% ITM probability)<br>
+        • <strong>Premium Yield</strong>: Option premium as % of stock price (annualized would be ~12x this for monthly)<br>
+        • Williams %R: <span style='color:#27ae60'>≤-80 (oversold, room to run)</span> | 
+          <span style='color:#f39c12'>-50 to -20 (neutral)</span> | 
+          <span style='color:#e74c3c'>≥-20 (overbought, limited upside)</span>
+    </div>
+    """
+    
+    return html

@@ -1,0 +1,143 @@
+name: V2 Market Scanner
+
+on:
+  schedule:
+    # Market scan at 9:35 AM ET (after market open) - Mon-Fri
+    - cron: '35 14 * * 1-5'
+    # Short scan at 10:30 AM ET - Mon-Fri
+    - cron: '30 15 * * 1-5'
+    # Portfolio scan at 4:05 PM ET (after market close) - Mon-Fri  
+    - cron: '5 21 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      scan_type:
+        description: 'Scan type'
+        required: true
+        default: 'market'
+        type: choice
+        options:
+          - market
+          - mystocks
+          - friends
+          - shorts
+          - shortscan
+      market_cap:
+        description: 'Min market cap in millions (e.g., 5000 for $5B)'
+        required: false
+        default: '5000'
+      include_adr:
+        description: 'Include ADR stocks'
+        required: false
+        default: false
+        type: boolean
+      custom_title:
+        description: 'Custom email subject (optional)'
+        required: false
+        default: ''
+      extra_email:
+        description: 'Additional email recipient'
+        required: false
+        default: ''
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        ref: feature/prsi-primary-refactor
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        pip install yfinance pandas ta requests
+    
+    - name: Determine scan type
+      id: scan_config
+      run: |
+        # For scheduled runs, determine based on time
+        HOUR=$(date -u +%H)
+        MINUTE=$(date -u +%M)
+        
+        if [ "${{ github.event_name }}" == "schedule" ]; then
+          if [ "$HOUR" -eq 14 ]; then
+            # 9:35 AM ET = market scan
+            echo "scan_type=market" >> $GITHUB_OUTPUT
+            echo "extra_flags=--mc 5000" >> $GITHUB_OUTPUT
+          elif [ "$HOUR" -eq 15 ]; then
+            # 10:30 AM ET = shortscan
+            echo "scan_type=shortscan" >> $GITHUB_OUTPUT
+            echo "extra_flags=--mc 5000" >> $GITHUB_OUTPUT
+          else
+            # 4:05 PM ET = portfolio scan
+            echo "scan_type=mystocks" >> $GITHUB_OUTPUT
+            echo "extra_flags=" >> $GITHUB_OUTPUT
+          fi
+        else
+          # Manual run - use inputs
+          echo "scan_type=${{ github.event.inputs.scan_type }}" >> $GITHUB_OUTPUT
+          
+          FLAGS=""
+          if [ "${{ github.event.inputs.market_cap }}" != "" ]; then
+            FLAGS="$FLAGS --mc ${{ github.event.inputs.market_cap }}"
+          fi
+          if [ "${{ github.event.inputs.include_adr }}" == "true" ]; then
+            FLAGS="$FLAGS --adr"
+          fi
+          if [ "${{ github.event.inputs.custom_title }}" != "" ]; then
+            FLAGS="$FLAGS -t \"${{ github.event.inputs.custom_title }}\""
+          fi
+          if [ "${{ github.event.inputs.extra_email }}" != "" ]; then
+            FLAGS="$FLAGS --email-to ${{ github.event.inputs.extra_email }}"
+          fi
+          echo "extra_flags=$FLAGS" >> $GITHUB_OUTPUT
+        fi
+    
+    - name: Run V2 Scanner
+      env:
+        GMAIL_EMAIL: ${{ secrets.GMAIL_EMAIL }}
+        GMAIL_PASSWORD: ${{ secrets.GMAIL_PASSWORD }}
+        RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+      run: |
+        SCAN_TYPE="${{ steps.scan_config.outputs.scan_type }}"
+        EXTRA_FLAGS="${{ steps.scan_config.outputs.extra_flags }}"
+        
+        case $SCAN_TYPE in
+          market)
+            echo "Running market scan..."
+            python main.py $EXTRA_FLAGS
+            ;;
+          mystocks)
+            echo "Running portfolio scan..."
+            python main.py -mystocks $EXTRA_FLAGS
+            ;;
+          friends)
+            echo "Running friends scan..."
+            python main.py -friends $EXTRA_FLAGS
+            ;;
+          shorts)
+            echo "Running shorts watchlist scan..."
+            python main.py -shorts $EXTRA_FLAGS
+            ;;
+          shortscan)
+            echo "Running market-wide short scan..."
+            python main.py -shortscan $EXTRA_FLAGS
+            ;;
+        esac
+    
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: scan-results-${{ github.run_id }}
+        path: |
+          *.html
+          *.json
+        retention-days: 7
+        if-no-files-found: ignore
