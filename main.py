@@ -1084,8 +1084,9 @@ def main():
                     print(f"\n  📊 Fetching put spreads for {len(top_for_options)} actionable candidates...")
                 
                 for i, candidate in enumerate(top_for_options):
-                    if i > 0 and i % 3 == 0:
-                        time.sleep(1.0)
+                    # Delay 2 seconds between each request to avoid rate limiting
+                    if i > 0:
+                        time.sleep(2.0)
                     try:
                         put_data = get_put_spread_recommendation(
                             candidate.ticker, 
@@ -1152,9 +1153,9 @@ def main():
                     print(f"\n  📊 Fetching put spreads for top {len(top_for_options)} candidates...")
                 
                 for i, candidate in enumerate(top_for_options):
-                    # Add delay every 3 requests to avoid rate limiting
-                    if i > 0 and i % 3 == 0:
-                        time.sleep(1.0)
+                    # Delay 2 seconds between each request to avoid rate limiting
+                    if i > 0:
+                        time.sleep(2.0)
                     
                     try:
                         put_data = get_put_spread_recommendation(
