@@ -54,9 +54,14 @@ jobs:
       with:
         python-version: '3.11'
     
+    - name: Install Chrome
+      uses: browser-actions/setup-chrome@v1
+      with:
+        chrome-version: stable
+    
     - name: Install dependencies
       run: |
-        pip install yfinance pandas ta requests
+        pip install -r requirements.txt
     
     - name: Determine scan type
       id: scan_config
