@@ -924,6 +924,8 @@ V2 Key Changes:
                        help='Minimum dividend yield %% for dividend section (default: 2.0)')
     parser.add_argument('-t', '--title', type=str, default=None,
                        help='Custom email subject title')
+    parser.add_argument('--skip-options', action='store_true',
+                       help='Skip fetching options data (for shorts scan when rate limited)')
     
     return parser.parse_args()
 
@@ -1142,49 +1144,55 @@ def main():
                 viable_candidates.sort(key=lambda x: -x.short_score)
                 top_for_options = viable_candidates[:25]
                 
-                # Second pass: Fetch options with delay to avoid rate limiting
-                from analysis.shorts import get_put_spread_recommendation
-                import time
-                
                 short_candidates = []
                 skipped = []
                 
-                if top_for_options and not args.quiet:
-                    print(f"\n  📊 Fetching put spreads for top {len(top_for_options)} candidates...")
-                
-                for i, candidate in enumerate(top_for_options):
-                    # Delay 2 seconds between each request to avoid rate limiting
-                    if i > 0:
-                        time.sleep(2.0)
+                # Skip options fetching if flag is set
+                if args.skip_options:
+                    if not args.quiet:
+                        print(f"\n  ⏭️ Skipping options fetch (--skip-options)")
+                    short_candidates = top_for_options
+                else:
+                    # Second pass: Fetch options with delay to avoid rate limiting
+                    from analysis.shorts import get_put_spread_recommendation
+                    import time
                     
-                    try:
-                        put_data = get_put_spread_recommendation(
-                            candidate.ticker, 
-                            candidate.current_price, 
-                            candidate.atr_percent
-                        )
-                        if put_data and put_data.get('spread_cost', 0) > 0:
-                            candidate.buy_put_strike = put_data['buy_strike']
-                            candidate.sell_put_strike = put_data['sell_strike']
-                            candidate.put_expiration = put_data['expiration']
-                            candidate.put_days_to_expiry = put_data['days_to_expiry']
-                            candidate.spread_cost = put_data['spread_cost']
-                            candidate.max_profit = put_data['max_profit']
-                            short_candidates.append(candidate)
-                        else:
+                    if top_for_options and not args.quiet:
+                        print(f"\n  📊 Fetching put spreads for top {len(top_for_options)} candidates...")
+                    
+                    for i, candidate in enumerate(top_for_options):
+                        # Delay 2 seconds between each request to avoid rate limiting
+                        if i > 0:
+                            time.sleep(2.0)
+                        
+                        try:
+                            put_data = get_put_spread_recommendation(
+                                candidate.ticker, 
+                                candidate.current_price, 
+                                candidate.atr_percent
+                            )
+                            if put_data and put_data.get('spread_cost', 0) > 0:
+                                candidate.buy_put_strike = put_data['buy_strike']
+                                candidate.sell_put_strike = put_data['sell_strike']
+                                candidate.put_expiration = put_data['expiration']
+                                candidate.put_days_to_expiry = put_data['days_to_expiry']
+                                candidate.spread_cost = put_data['spread_cost']
+                                candidate.max_profit = put_data['max_profit']
+                                short_candidates.append(candidate)
+                            else:
+                                skipped.append(candidate)
+                        except Exception:
                             skipped.append(candidate)
-                    except Exception:
-                        skipped.append(candidate)
+                        
+                        # Stop once we have 25 candidates with options
+                        if len(short_candidates) >= 25:
+                            break
                     
-                    # Stop once we have 25 candidates with options
-                    if len(short_candidates) >= 25:
-                        break
-                
-                # FALLBACK: If all rate limited, show candidates WITHOUT options data
-                if len(short_candidates) == 0 and len(skipped) > 0:
-                    print(f"\n  ⚠️ Rate limited - showing candidates without options data")
-                    short_candidates = skipped[:25]  # Show top 25 anyway
-                    skipped = []
+                    # FALLBACK: If all rate limited, show candidates WITHOUT options data
+                    if len(short_candidates) == 0 and len(skipped) > 0:
+                        print(f"\n  ⚠️ Rate limited - showing candidates without options data")
+                        short_candidates = skipped[:25]  # Show top 25 anyway
+                        skipped = []
                 
                 # Print console summary
                 if not args.quiet:
