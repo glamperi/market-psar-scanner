@@ -348,6 +348,7 @@ def get_put_spread_recommendation(
         sell_target_strike = current_price * 0.85  # 15% OTM
         
         # Find closest strikes
+        puts = puts.copy()
         puts['buy_diff'] = abs(puts['strike'] - buy_target_strike)
         puts['sell_diff'] = abs(puts['strike'] - sell_target_strike)
         
@@ -396,7 +397,10 @@ def get_put_spread_recommendation(
         }
         
     except Exception as e:
-        print(f"    Warning: Could not get put spread for {ticker}: {e}")
+        error_msg = str(e)
+        # Only print warning for non-rate-limit errors or first occurrence
+        if 'Too Many Requests' not in error_msg:
+            print(f"    Warning: Could not get put spread for {ticker}: {e}")
         return None
 
 

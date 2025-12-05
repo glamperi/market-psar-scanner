@@ -1180,13 +1180,20 @@ def main():
                     if len(short_candidates) >= 25:
                         break
                 
+                # FALLBACK: If all rate limited, show candidates WITHOUT options data
+                if len(short_candidates) == 0 and len(skipped) > 0:
+                    print(f"\n  ⚠️ Rate limited - showing candidates without options data")
+                    short_candidates = skipped[:25]  # Show top 25 anyway
+                    skipped = []
+                
                 # Print console summary
                 if not args.quiet:
                     print(f"\n{'='*60}")
                     print(f"SHORT SCAN COMPLETE: {len(results)} stocks analyzed")
                     print(f"{'='*60}")
-                    print(f"  🔴 Short Candidates (with options): {len(short_candidates)}")
-                    print(f"  ⏳ Skipped (no options/rate limited): {len(skipped)}")
+                    print(f"  🔴 Short Candidates: {len(short_candidates)}")
+                    if skipped:
+                        print(f"  ⏳ Skipped (no options/rate limited): {len(skipped)}")
                 
                 # Build shorts HTML - single list only
                 html_body = build_shorts_report_html(
