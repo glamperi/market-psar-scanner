@@ -305,7 +305,7 @@ def build_results_table(results: List[ScanResult], zone: str, use_v2: bool = Tru
         atr_pct = getattr(r, 'atr_percent', 0)
         if atr_pct >= 5:
             atr_color = '#e74c3c'  # Red - high volatility
-            atr_display = f"{atr_pct:.1f}% 📞"  # Phone emoji suggests "call"
+            atr_display = f"{atr_pct:.1f}% <a href='#cc-{r.ticker}' style='text-decoration:none;'>📞</a>"  # Clickable phone links to covered call
         elif atr_pct >= 3:
             atr_color = '#f39c12'  # Yellow/orange - moderate
             atr_display = f"{atr_pct:.1f}%"

@@ -224,7 +224,7 @@ def build_covered_call_section(suggestions):
         yield_d = f"{s.premium_yield:.1f}%" if s.premium_yield else "-"
         
         html += f"""
-        <tr>
+        <tr id="cc-{s.ticker}">
             <td><strong>{s.ticker}</strong></td>
             <td>${s.current_price:.2f}</td>
             <td style='color:#e74c3c; font-weight:bold;'>{s.atr_percent:.1f}%</td>
