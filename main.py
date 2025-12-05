@@ -1055,88 +1055,157 @@ def main():
                     atr_percent=r.atr_percent,
                     fetch_options=False
                 )
+                all_candidates.append(candidate)
+            
+            # Different behavior for watchlist vs market scan
+            is_watchlist_mode = (mode == 'Shorts')
+            
+            if is_watchlist_mode:
+                # WATCHLIST MODE (-shorts): Show ALL stocks with their category
+                # Categorize all candidates
+                prime_shorts = [c for c in all_candidates if c.category == 'PRIME_SHORT']
+                short_candidates = [c for c in all_candidates if c.category == 'SHORT_CANDIDATE']
+                not_ready = [c for c in all_candidates if c.category == 'NOT_READY']
+                avoid = [c for c in all_candidates if c.category == 'AVOID']
                 
-                # Only consider if it's a viable short (not AVOID)
-                if candidate.category in ['PRIME_SHORT', 'SHORT_CANDIDATE']:
-                    all_candidates.append(candidate)
-            
-            # Sort by score and take top 25 for options lookup (reduced to avoid rate limiting)
-            all_candidates.sort(key=lambda x: -x.short_score)
-            top_for_options = all_candidates[:25]
-            
-            # Second pass: Fetch options with delay to avoid rate limiting
-            # Only keep candidates that have tradeable options
-            from analysis.shorts import get_put_spread_recommendation
-            import time
-            
-            short_candidates = []
-            not_ready = []
-            
-            if top_for_options and not args.quiet:
-                print(f"\n  📊 Fetching put spreads for top {len(top_for_options)} candidates...")
-            
-            for i, candidate in enumerate(top_for_options):
-                # Add delay every 3 requests to avoid rate limiting
-                if i > 0 and i % 3 == 0:
-                    time.sleep(1.0)
+                # Sort each by score
+                prime_shorts.sort(key=lambda x: -x.short_score)
+                short_candidates.sort(key=lambda x: -x.short_score)
+                not_ready.sort(key=lambda x: -x.short_score)
+                avoid.sort(key=lambda x: -x.short_score)
                 
-                try:
-                    put_data = get_put_spread_recommendation(
-                        candidate.ticker, 
-                        candidate.current_price, 
-                        candidate.atr_percent
-                    )
-                    if put_data and put_data.get('spread_cost', 0) > 0:
-                        # Has valid options - include in final list
-                        candidate.buy_put_strike = put_data['buy_strike']
-                        candidate.sell_put_strike = put_data['sell_strike']
-                        candidate.put_expiration = put_data['expiration']
-                        candidate.put_days_to_expiry = put_data['days_to_expiry']
-                        candidate.spread_cost = put_data['spread_cost']
-                        candidate.max_profit = put_data['max_profit']
-                        short_candidates.append(candidate)
-                    else:
-                        # No options available - skip
-                        not_ready.append(candidate)
-                except Exception:
-                    # Rate limited or error - put in not_ready
-                    not_ready.append(candidate)
+                # Fetch options only for prime and candidates (top shorts)
+                from analysis.shorts import get_put_spread_recommendation
+                import time
                 
-                # Stop once we have 40 candidates with options
-                if len(short_candidates) >= 40:
-                    break
-            
-            # Final list is just short_candidates (with options)
-            # Limit to 40 max
-            short_candidates = short_candidates[:40]
-            
-            # Print console summary
-            if not args.quiet:
-                print(f"\n{'='*60}")
-                print(f"SHORT SCAN COMPLETE: {len(results)} stocks analyzed")
-                print(f"{'='*60}")
-                print(f"  🔴 Short Candidates (with options): {len(short_candidates)}")
-                print(f"  ⏳ Skipped (no options/rate limited): {len(not_ready)}")
-            
-            # Build shorts HTML - single list only
-            html_body = build_shorts_report_html(
-                short_candidates=short_candidates,
-                mode=mode,
-                total_scanned=len(results)
-            )
-            
-            # Send email
-            if not args.no_email:
-                send_shorts_email(
-                    html_body=html_body,
+                top_for_options = (prime_shorts + short_candidates)[:20]
+                
+                if top_for_options and not args.quiet:
+                    print(f"\n  📊 Fetching put spreads for {len(top_for_options)} actionable candidates...")
+                
+                for i, candidate in enumerate(top_for_options):
+                    if i > 0 and i % 3 == 0:
+                        time.sleep(1.0)
+                    try:
+                        put_data = get_put_spread_recommendation(
+                            candidate.ticker, 
+                            candidate.current_price, 
+                            candidate.atr_percent
+                        )
+                        if put_data and put_data.get('spread_cost', 0) > 0:
+                            candidate.buy_put_strike = put_data['buy_strike']
+                            candidate.sell_put_strike = put_data['sell_strike']
+                            candidate.put_expiration = put_data['expiration']
+                            candidate.put_days_to_expiry = put_data['days_to_expiry']
+                            candidate.spread_cost = put_data['spread_cost']
+                            candidate.max_profit = put_data['max_profit']
+                    except Exception:
+                        pass
+                
+                # Print console summary
+                if not args.quiet:
+                    print(f"\n{'='*60}")
+                    print(f"SHORT WATCHLIST ANALYSIS: {len(all_candidates)} stocks")
+                    print(f"{'='*60}")
+                    print(f"  🔴🔴 Prime Shorts: {len(prime_shorts)}")
+                    print(f"  🔴 Short Candidates: {len(short_candidates)}")
+                    print(f"  ⏳ Not Ready: {len(not_ready)}")
+                    print(f"  ❌ Avoid: {len(avoid)}")
+                
+                # Build watchlist HTML (shows all categories)
+                from analysis.shorts import build_shorts_watchlist_html
+                html_body = build_shorts_watchlist_html(
+                    prime_shorts=prime_shorts,
+                    short_candidates=short_candidates,
+                    not_ready=not_ready,
+                    avoid=avoid,
                     mode=mode,
-                    prime_count=len(short_candidates),  # Now just one list
-                    candidate_count=0,  # Not used anymore
-                    additional_email=args.email_to,
-                    custom_title=args.title
+                    total_scanned=len(results)
                 )
+                
+                # Send email
+                if not args.no_email:
+                    send_shorts_email(
+                        html_body=html_body,
+                        mode=mode,
+                        prime_count=len(prime_shorts) + len(short_candidates),
+                        candidate_count=0,
+                        additional_email=args.email_to,
+                        custom_title=args.title
+                    )
             
-            # Save HTML if requested
+            else:
+                # MARKET SCAN MODE (-shortscan): Filter to top candidates only
+                # Only keep viable shorts
+                viable_candidates = [c for c in all_candidates if c.category in ['PRIME_SHORT', 'SHORT_CANDIDATE']]
+                viable_candidates.sort(key=lambda x: -x.short_score)
+                top_for_options = viable_candidates[:25]
+                
+                # Second pass: Fetch options with delay to avoid rate limiting
+                from analysis.shorts import get_put_spread_recommendation
+                import time
+                
+                short_candidates = []
+                skipped = []
+                
+                if top_for_options and not args.quiet:
+                    print(f"\n  📊 Fetching put spreads for top {len(top_for_options)} candidates...")
+                
+                for i, candidate in enumerate(top_for_options):
+                    # Add delay every 3 requests to avoid rate limiting
+                    if i > 0 and i % 3 == 0:
+                        time.sleep(1.0)
+                    
+                    try:
+                        put_data = get_put_spread_recommendation(
+                            candidate.ticker, 
+                            candidate.current_price, 
+                            candidate.atr_percent
+                        )
+                        if put_data and put_data.get('spread_cost', 0) > 0:
+                            candidate.buy_put_strike = put_data['buy_strike']
+                            candidate.sell_put_strike = put_data['sell_strike']
+                            candidate.put_expiration = put_data['expiration']
+                            candidate.put_days_to_expiry = put_data['days_to_expiry']
+                            candidate.spread_cost = put_data['spread_cost']
+                            candidate.max_profit = put_data['max_profit']
+                            short_candidates.append(candidate)
+                        else:
+                            skipped.append(candidate)
+                    except Exception:
+                        skipped.append(candidate)
+                    
+                    # Stop once we have 25 candidates with options
+                    if len(short_candidates) >= 25:
+                        break
+                
+                # Print console summary
+                if not args.quiet:
+                    print(f"\n{'='*60}")
+                    print(f"SHORT SCAN COMPLETE: {len(results)} stocks analyzed")
+                    print(f"{'='*60}")
+                    print(f"  🔴 Short Candidates (with options): {len(short_candidates)}")
+                    print(f"  ⏳ Skipped (no options/rate limited): {len(skipped)}")
+                
+                # Build shorts HTML - single list only
+                html_body = build_shorts_report_html(
+                    short_candidates=short_candidates,
+                    mode=mode,
+                    total_scanned=len(results)
+                )
+                
+                # Send email
+                if not args.no_email:
+                    send_shorts_email(
+                        html_body=html_body,
+                        mode=mode,
+                        prime_count=len(short_candidates),
+                        candidate_count=0,
+                        additional_email=args.email_to,
+                        custom_title=args.title
+                    )
+            
+            # Save HTML if requested (for both modes)
             if args.html:
                 with open(args.html, 'w') as f:
                     f.write(html_body)

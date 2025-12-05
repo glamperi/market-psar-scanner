@@ -653,3 +653,83 @@ def build_shorts_report_html(
     
     html += "</body></html>"
     return html
+
+
+def build_shorts_watchlist_html(
+    prime_shorts: List[ShortCandidate],
+    short_candidates: List[ShortCandidate],
+    not_ready: List[ShortCandidate],
+    avoid: List[ShortCandidate],
+    mode: str = "Shorts",
+    total_scanned: int = 0
+) -> str:
+    """Build HTML report for shorts watchlist - shows ALL stocks with categories."""
+    
+    html = """
+    <html>
+    <head>
+        <style>
+            body { font-family: Arial, sans-serif; font-size: 12px; }
+            table { border-collapse: collapse; width: 100%; margin: 10px 0; }
+            th { padding: 8px; text-align: left; font-size: 11px; }
+            td { padding: 6px; border-bottom: 1px solid #ddd; font-size: 11px; }
+            tr:hover { background-color: #f5f5f5; }
+        </style>
+    </head>
+    <body>
+    """
+    
+    html += f"""
+    <h2>🐻 Short Watchlist Analysis - {datetime.now().strftime('%Y-%m-%d %H:%M')}</h2>
+    <p>Mode: {mode} | Analyzed: {total_scanned} stocks from shorts.txt</p>
+    """
+    
+    # Summary
+    html += f"""
+    <div style='background-color:#f5f5f5; padding:15px; margin:10px 0; border-left:4px solid #c0392b;'>
+        <strong>📊 WATCHLIST BREAKDOWN:</strong><br>
+        🔴🔴 <strong>{len(prime_shorts)} Prime Shorts</strong> (Execute now) |
+        🔴 <strong>{len(short_candidates)} Short Candidates</strong> (Good setups) |
+        ⏳ <strong>{len(not_ready)} Not Ready</strong> (Watch) |
+        ❌ <strong>{len(avoid)} Avoid</strong> (Wrong direction)
+    </div>
+    """
+    
+    # Guide
+    html += """
+    <div style='font-size:10px; color:#666; padding:10px; background:#fff3cd; margin:10px 0;'>
+        <strong>Score Components:</strong> PRSI bearish (+25) | Below PSAR (+15-20) | Fresh signal (+10) | 
+        OBV distribution (+15) | DMI bearish (+10) | Overbought Will%R (+15) | High ATR (+10) | Low SI (+5)<br>
+        <strong>Penalties:</strong> PRSI bullish (-30) | Above PSAR (-20) | Oversold Will%R (-15) | High SI squeeze risk (-25)
+    </div>
+    """
+    
+    # Prime Shorts
+    if prime_shorts:
+        html += build_shorts_html_section(prime_shorts, f"🔴🔴 PRIME SHORTS - Execute Now ({len(prime_shorts)})", "#c0392b")
+    
+    # Short Candidates
+    if short_candidates:
+        html += build_shorts_html_section(short_candidates, f"🔴 SHORT CANDIDATES - Good Setups ({len(short_candidates)})", "#e74c3c")
+    
+    # Not Ready
+    if not_ready:
+        html += build_shorts_html_section(not_ready, f"⏳ NOT READY - Watch for Breakdown ({len(not_ready)})", "#f39c12")
+    
+    # Avoid
+    if avoid:
+        html += build_avoid_section(avoid)
+    
+    # Legend
+    html += """
+    <div style='font-size:10px; color:#666; margin-top:20px; padding:10px; background:#f9f9f9;'>
+        <strong>Legend:</strong><br>
+        PRSI: ↘️ Bearish (good) ↗️ Bullish (bad) | OBV: 🔴 Distribution (good) 🟢 Accumulation (bad)<br>
+        Squeeze Risk: 🟢 Low (<5% SI) 🟡 Moderate (15-25%) 🔴 High (>25%)<br>
+        Will%R: Red = Overbought (good entry) | Green = Oversold (bounce risk)<br>
+        <strong>Put Spread Strategy:</strong> Buy higher strike put, sell lower strike put. Max loss = spread cost. Max profit = strike diff - cost.
+    </div>
+    """
+    
+    html += "</body></html>"
+    return html
