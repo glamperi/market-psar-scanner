@@ -1060,9 +1060,9 @@ def main():
                 if candidate.category in ['PRIME_SHORT', 'SHORT_CANDIDATE']:
                     all_candidates.append(candidate)
             
-            # Sort by score and take top 50 for options lookup
+            # Sort by score and take top 25 for options lookup (reduced to avoid rate limiting)
             all_candidates.sort(key=lambda x: -x.short_score)
-            top_for_options = all_candidates[:50]
+            top_for_options = all_candidates[:25]
             
             # Second pass: Fetch options with delay to avoid rate limiting
             # Only keep candidates that have tradeable options
@@ -1076,9 +1076,9 @@ def main():
                 print(f"\n  📊 Fetching put spreads for top {len(top_for_options)} candidates...")
             
             for i, candidate in enumerate(top_for_options):
-                # Add small delay every 5 requests to avoid rate limiting
-                if i > 0 and i % 5 == 0:
-                    time.sleep(0.5)
+                # Add delay every 3 requests to avoid rate limiting
+                if i > 0 and i % 3 == 0:
+                    time.sleep(1.0)
                 
                 try:
                     put_data = get_put_spread_recommendation(
