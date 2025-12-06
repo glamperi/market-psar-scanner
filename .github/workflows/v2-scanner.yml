@@ -25,6 +25,14 @@ on:
         description: 'Min market cap in millions (e.g., 5000 for $5B)'
         required: false
         default: '5000'
+      eps_growth:
+        description: 'Min EPS growth % (leave empty for no filter)'
+        required: false
+        default: ''
+      rev_growth:
+        description: 'Min Revenue growth % (leave empty for no filter)'
+        required: false
+        default: ''
       include_adr:
         description: 'Include ADR stocks'
         required: false
@@ -91,6 +99,12 @@ jobs:
           FLAGS=""
           if [ "${{ github.event.inputs.market_cap }}" != "" ]; then
             FLAGS="$FLAGS --mc ${{ github.event.inputs.market_cap }}"
+          fi
+          if [ "${{ github.event.inputs.eps_growth }}" != "" ]; then
+            FLAGS="$FLAGS --eps ${{ github.event.inputs.eps_growth }}"
+          fi
+          if [ "${{ github.event.inputs.rev_growth }}" != "" ]; then
+            FLAGS="$FLAGS --rev ${{ github.event.inputs.rev_growth }}"
           fi
           if [ "${{ github.event.inputs.include_adr }}" == "true" ]; then
             FLAGS="$FLAGS --adr"
