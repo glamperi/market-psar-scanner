@@ -1000,59 +1000,13 @@ def main():
         print(f"   {datetime.now().strftime('%Y-%m-%d %H:%M')}")
         print(f"{'='*60}\n")
     
-    # Get CBOE data
+    # Get CBOE data (includes Total P/C and VIX P/C ratios)
     cboe_text = ""
     try:
         cboe_text = get_cboe_ratios_and_analyze()
     except Exception as e:
         if not args.quiet:
             print(f"Warning: Could not get CBOE data: {e}")
-    
-    # Get VIX Put/Call Ratio
-    vix_pcr_text = ""
-    try:
-        import yfinance as yf
-        vix = yf.Ticker("^VIX")
-        
-        # Get VIX options
-        if vix.options:
-            # Use nearest expiration
-            nearest_exp = vix.options[0]
-            chain = vix.option_chain(nearest_exp)
-            
-            if not chain.calls.empty and not chain.puts.empty:
-                # Calculate P/C ratio by open interest or volume
-                call_oi = chain.calls['openInterest'].sum()
-                put_oi = chain.puts['openInterest'].sum()
-                
-                if call_oi > 0:
-                    vix_pcr = put_oi / call_oi
-                    
-                    # VIX PCR interpretation (opposite of normal PCR)
-                    # High VIX PCR = betting volatility falls = bullish for stocks
-                    if vix_pcr >= 1.20:
-                        vix_signal = "📈 CONTRARIAN BUY: VIX PCR above 1.20. Extreme VIX Put buying suggests volatility will fall (Bullish for the Market)."
-                    elif vix_pcr >= 1.00:
-                        vix_signal = "🟢 Elevated VIX puts - Traders expect volatility to decrease (Bullish)"
-                    elif vix_pcr >= 0.80:
-                        vix_signal = "Neutral VIX sentiment"
-                    elif vix_pcr >= 0.60:
-                        vix_signal = "🟡 Elevated VIX calls - Traders hedging, expect volatility rise"
-                    else:
-                        vix_signal = "🔴 Extreme VIX call buying - Fear of volatility spike (Bearish)"
-                    
-                    vix_pcr_text = f"VIX PUT/CALL RATIO: {vix_pcr:.2f}\n{vix_signal}"
-                    if not args.quiet:
-                        print(f"  VIX P/C Ratio: {vix_pcr:.2f}")
-    except Exception as e:
-        if not args.quiet:
-            print(f"Warning: Could not get VIX P/C ratio: {e}")
-    
-    # Combine CBOE and VIX PCR
-    if vix_pcr_text and cboe_text:
-        cboe_text = cboe_text + "\n\n" + vix_pcr_text
-    elif vix_pcr_text:
-        cboe_text = vix_pcr_text
     
     # Common kwargs
     kwargs = {
