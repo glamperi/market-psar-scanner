@@ -205,7 +205,7 @@ def build_covered_call_section(suggestions):
         <tr style='background-color:#8e44ad; color:white;'>
             <th>Ticker</th><th>Price</th><th>ATR%</th><th>Will%R</th><th>ADX</th>
             <th>Est.Ceiling</th><th>Strike</th><th>OTM%</th><th>Expiry</th>
-            <th>Delta</th><th>Premium</th><th>Yield</th>
+            <th>Delta</th><th>Premium</th><th>Yield</th><th>Trade</th>
         </tr>
     """
     
@@ -223,6 +223,20 @@ def build_covered_call_section(suggestions):
         prem_d = f"${s.premium:.2f}" if s.premium else "-"
         yield_d = f"{s.premium_yield:.1f}%" if s.premium_yield else "-"
         
+        # Build Fidelity option symbol: -TICKER{YYMMDD}C{STRIKE}
+        fidelity_link = ""
+        try:
+            from datetime import datetime
+            exp_date = datetime.strptime(s.expiration_date, '%Y-%m-%d')
+            exp_yymmdd = exp_date.strftime('%y%m%d')
+            # Format strike - remove decimal if whole number
+            strike_int = int(s.suggested_strike) if s.suggested_strike == int(s.suggested_strike) else s.suggested_strike
+            option_symbol = f"-{s.ticker}{exp_yymmdd}C{strike_int}"
+            fidelity_url = f"https://digital.fidelity.com/ftgw/digital/quick-quote/popup?symbol={option_symbol}"
+            fidelity_link = f"<a href='{fidelity_url}' target='_blank' style='text-decoration:none;'>📊</a>"
+        except:
+            fidelity_link = "-"
+        
         html += f"""
         <tr id="cc-{s.ticker}">
             <td><strong>{s.ticker}</strong></td>
@@ -237,6 +251,7 @@ def build_covered_call_section(suggestions):
             <td>{delta_d}</td>
             <td>{prem_d}</td>
             <td style='color:#27ae60;'>{yield_d}</td>
+            <td>{fidelity_link}</td>
         </tr>"""
     
     html += """</table>

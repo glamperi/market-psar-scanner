@@ -492,7 +492,7 @@ def build_shorts_html_section(candidates: List[ShortCandidate], title: str, sect
             <th>Ticker</th><th>Price</th><th>PSAR%</th><th>Days</th><th>Score</th>
             <th>PRSI</th><th>OBV</th><th>DMI</th><th>ADX</th><th>Will%R</th><th>ATR%</th>
             <th>SI%</th><th>Squeeze</th>
-            <th>Buy Put</th><th>Sell Put</th><th>Exp</th><th>Cost</th>
+            <th>Buy Put</th><th>Sell Put</th><th>Exp</th><th>Cost</th><th>Trade</th>
         </tr>
     """
     
@@ -526,6 +526,26 @@ def build_shorts_html_section(candidates: List[ShortCandidate], title: str, sect
         exp = c.put_expiration if c.put_expiration else "-"
         cost = f"${c.spread_cost:.2f}" if c.spread_cost else "-"
         
+        # Build Fidelity links for put spread
+        fidelity_links = "-"
+        if c.buy_put_strike and c.sell_put_strike and c.put_expiration:
+            try:
+                from datetime import datetime
+                exp_date = datetime.strptime(c.put_expiration, '%Y-%m-%d')
+                exp_yymmdd = exp_date.strftime('%y%m%d')
+                buy_strike_int = int(c.buy_put_strike) if c.buy_put_strike == int(c.buy_put_strike) else c.buy_put_strike
+                sell_strike_int = int(c.sell_put_strike) if c.sell_put_strike == int(c.sell_put_strike) else c.sell_put_strike
+                
+                buy_symbol = f"-{c.ticker}{exp_yymmdd}P{buy_strike_int}"
+                sell_symbol = f"-{c.ticker}{exp_yymmdd}P{sell_strike_int}"
+                
+                buy_url = f"https://digital.fidelity.com/ftgw/digital/quick-quote/popup?symbol={buy_symbol}"
+                sell_url = f"https://digital.fidelity.com/ftgw/digital/quick-quote/popup?symbol={sell_symbol}"
+                
+                fidelity_links = f"<a href='{buy_url}' target='_blank' style='text-decoration:none;'>📈B</a> <a href='{sell_url}' target='_blank' style='text-decoration:none;'>📉S</a>"
+            except:
+                fidelity_links = "-"
+        
         # Score color
         if c.short_score >= 60:
             score_color = '#27ae60'
@@ -553,6 +573,7 @@ def build_shorts_html_section(candidates: List[ShortCandidate], title: str, sect
             <td>{sell_put}</td>
             <td>{exp}</td>
             <td>{cost}</td>
+            <td>{fidelity_links}</td>
         </tr>"""
     
     html += "</table>"
