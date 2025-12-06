@@ -182,10 +182,40 @@ def get_cboe_ratios_and_analyze():
         
         # --- SECOND: Get VIX P/C Ratio from daily page ---
         try:
-            url_daily = "https://www.cboe.com/us/options/market_statistics/daily/"
+            # Try iframe URL first (like intraday)
+            url_daily = "https://www.cboe.com/us/options/market_statistics/daily/?iframe=1"
             driver.get(url_daily)
-            time.sleep(5)
+            time.sleep(3)
             
+            # Handle cookie consent popup if present
+            try:
+                from selenium.webdriver.common.by import By
+                from selenium.webdriver.support.ui import WebDriverWait
+                from selenium.webdriver.support import expected_conditions as EC
+                
+                # Look for common cookie consent buttons
+                consent_buttons = [
+                    "//button[contains(text(), 'Accept')]",
+                    "//button[contains(text(), 'Accept All')]",
+                    "//button[contains(text(), 'I Accept')]",
+                    "//button[contains(@class, 'accept')]",
+                    "//a[contains(text(), 'Accept')]",
+                ]
+                
+                for xpath in consent_buttons:
+                    try:
+                        button = driver.find_element(By.XPATH, xpath)
+                        if button.is_displayed():
+                            button.click()
+                            print("  Clicked cookie consent")
+                            time.sleep(2)
+                            break
+                    except:
+                        continue
+            except:
+                pass  # No consent popup or couldn't click it
+            
+            time.sleep(3)
             daily_page = driver.page_source
             
             # The daily page has both:
@@ -211,13 +241,11 @@ def get_cboe_ratios_and_analyze():
             # Method 2: Find VIX section in page, extract the ratio
             if vix_pcr is None:
                 # Look for "VIX" in the page, then find the associated ratio
-                # The page structure typically has the label followed by the value
-                # Find position of "VOLATILITY INDEX (VIX)" text
                 vix_label = "VOLATILITY INDEX (VIX)"
                 vix_pos = daily_page.upper().find(vix_label)
                 
                 if vix_pos > 0:
-                    # Look in next 200 chars for "PUT/CALL" and then a decimal
+                    # Look in next 300 chars for "PUT/CALL" and then a decimal
                     search_area = daily_page[vix_pos:vix_pos+300]
                     
                     # Find decimals after PUT/CALL in this section
@@ -235,6 +263,34 @@ def get_cboe_ratios_and_analyze():
                                     break
                             except ValueError:
                                 continue
+            
+            # Method 3: Try parsing tables
+            if vix_pcr is None:
+                try:
+                    daily_dfs = pd.read_html(StringIO(daily_page))
+                    for df in daily_dfs:
+                        df_str = df.to_string().upper()
+                        if 'VIX' in df_str and 'PUT' in df_str:
+                            # Look through rows/cols for VIX ratio
+                            for idx, row in df.iterrows():
+                                row_str = ' '.join([str(v).upper() for v in row.values])
+                                if 'VIX' in row_str and 'PUT' in row_str:
+                                    # Find decimal in this row
+                                    for val in row.values:
+                                        try:
+                                            v = float(val)
+                                            if 0.2 < v < 3.0:
+                                                vix_pcr = v
+                                                print(f"  VIX P/C (table): {vix_pcr:.2f}")
+                                                break
+                                        except (ValueError, TypeError):
+                                            continue
+                                if vix_pcr:
+                                    break
+                        if vix_pcr:
+                            break
+                except Exception as e:
+                    print(f"  VIX table parsing error: {e}")
                                 
         except Exception as e:
             print(f"  Warning: Could not fetch VIX P/C ratio: {e}")
