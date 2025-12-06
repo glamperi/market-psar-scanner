@@ -399,7 +399,8 @@ def build_email_body(
     div_threshold: float = 2.0,
     strong_buy_limit: int = 100,
     early_buy_limit: int = 50,
-    dividend_limit: int = 30
+    dividend_limit: int = 30,
+    scan_params: dict = None
 ) -> str:
     """Build complete HTML email body with actionable sections."""
     
@@ -442,6 +443,31 @@ def build_email_body(
     version = "V2 (PRSI-Primary)" if use_v2 else "V1 (Classic)"
     html += f"<h2>📈 Market Scanner {version} - {datetime.now().strftime('%Y-%m-%d %H:%M')}</h2>"
     html += f"<p style='color:#7f8c8d; font-size:11px;'>Mode: {mode} | Scanned: {total_scanned} | Analyzed: {len(results)}</p>"
+    
+    # Display scan parameters
+    if scan_params:
+        params_parts = []
+        if scan_params.get('market_cap'):
+            mc = scan_params['market_cap']
+            if mc >= 1000:
+                params_parts.append(f"Market Cap ≥ ${mc/1000:.0f}B")
+            else:
+                params_parts.append(f"Market Cap ≥ ${mc:.0f}M")
+        if scan_params.get('eps_growth'):
+            params_parts.append(f"EPS Growth ≥ {scan_params['eps_growth']}%")
+        if scan_params.get('rev_growth'):
+            params_parts.append(f"Revenue Growth ≥ {scan_params['rev_growth']}%")
+        if scan_params.get('include_adr'):
+            params_parts.append("Including ADRs")
+        if scan_params.get('div_threshold'):
+            params_parts.append(f"Dividend ≥ {scan_params['div_threshold']}%")
+        
+        if params_parts:
+            html += f"""
+            <div style='background-color:#fff3cd; border-left:4px solid #f39c12; padding:10px; margin:10px 0; font-size:11px;'>
+                <strong>🔍 Scan Filters:</strong> {' | '.join(params_parts)}
+            </div>
+            """
     
     # CBOE sentiment
     if cboe_text:
@@ -758,7 +784,8 @@ def send_email(
     total_scanned: int = 0,
     additional_email: Optional[str] = None,
     div_threshold: float = 2.0,
-    custom_title: Optional[str] = None
+    custom_title: Optional[str] = None,
+    scan_params: dict = None
 ) -> bool:
     """Send email report."""
     sender_email = os.getenv("GMAIL_EMAIL")
@@ -790,7 +817,7 @@ def send_email(
         recipients.append(additional_email)
     msg['To'] = ", ".join(recipients)
     
-    html_body = build_email_body(results, mode, use_v2, cboe_text, total_scanned, div_threshold)
+    html_body = build_email_body(results, mode, use_v2, cboe_text, total_scanned, div_threshold, scan_params=scan_params)
     msg.attach(MIMEText(html_body, 'html'))
     
     try:
@@ -980,6 +1007,52 @@ def main():
     except Exception as e:
         if not args.quiet:
             print(f"Warning: Could not get CBOE data: {e}")
+    
+    # Get VIX Put/Call Ratio
+    vix_pcr_text = ""
+    try:
+        import yfinance as yf
+        vix = yf.Ticker("^VIX")
+        
+        # Get VIX options
+        if vix.options:
+            # Use nearest expiration
+            nearest_exp = vix.options[0]
+            chain = vix.option_chain(nearest_exp)
+            
+            if not chain.calls.empty and not chain.puts.empty:
+                # Calculate P/C ratio by open interest or volume
+                call_oi = chain.calls['openInterest'].sum()
+                put_oi = chain.puts['openInterest'].sum()
+                
+                if call_oi > 0:
+                    vix_pcr = put_oi / call_oi
+                    
+                    # VIX PCR interpretation (opposite of normal PCR)
+                    # High VIX PCR = betting volatility falls = bullish for stocks
+                    if vix_pcr >= 1.20:
+                        vix_signal = "📈 CONTRARIAN BUY: VIX PCR above 1.20. Extreme VIX Put buying suggests volatility will fall (Bullish for the Market)."
+                    elif vix_pcr >= 1.00:
+                        vix_signal = "🟢 Elevated VIX puts - Traders expect volatility to decrease (Bullish)"
+                    elif vix_pcr >= 0.80:
+                        vix_signal = "Neutral VIX sentiment"
+                    elif vix_pcr >= 0.60:
+                        vix_signal = "🟡 Elevated VIX calls - Traders hedging, expect volatility rise"
+                    else:
+                        vix_signal = "🔴 Extreme VIX call buying - Fear of volatility spike (Bearish)"
+                    
+                    vix_pcr_text = f"VIX PUT/CALL RATIO: {vix_pcr:.2f}\n{vix_signal}"
+                    if not args.quiet:
+                        print(f"  VIX P/C Ratio: {vix_pcr:.2f}")
+    except Exception as e:
+        if not args.quiet:
+            print(f"Warning: Could not get VIX P/C ratio: {e}")
+    
+    # Combine CBOE and VIX PCR
+    if vix_pcr_text and cboe_text:
+        cboe_text = cboe_text + "\n\n" + vix_pcr_text
+    elif vix_pcr_text:
+        cboe_text = vix_pcr_text
     
     # Common kwargs
     kwargs = {
@@ -1245,6 +1318,15 @@ def main():
             
             # Send email (unless --no-email)
             if not args.no_email:
+                # Build scan params for display
+                scan_params = {
+                    'market_cap': args.mc,
+                    'eps_growth': args.eps,
+                    'rev_growth': args.rev,
+                    'include_adr': args.adr,
+                    'div_threshold': args.div
+                }
+                
                 send_email(
                     results=results,
                     mode=mode,
@@ -1253,12 +1335,20 @@ def main():
                     total_scanned=summary.total_scanned,
                     additional_email=args.email_to,
                     div_threshold=args.div,
-                    custom_title=args.title
+                    custom_title=args.title,
+                    scan_params=scan_params
                 )
             
             # Save HTML if requested
             if args.html:
-                html = build_email_body(results, mode, use_v2, cboe_text, summary.total_scanned, args.div)
+                scan_params = {
+                    'market_cap': args.mc,
+                    'eps_growth': args.eps,
+                    'rev_growth': args.rev,
+                    'include_adr': args.adr,
+                    'div_threshold': args.div
+                }
+                html = build_email_body(results, mode, use_v2, cboe_text, summary.total_scanned, args.div, scan_params=scan_params)
                 with open(args.html, 'w') as f:
                     f.write(html)
                 print(f"✓ HTML report saved to: {args.html}")
