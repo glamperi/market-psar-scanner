@@ -1046,17 +1046,23 @@ def main():
     try:
         summary = scanner.scan()
         
-        # Collect all results
+        # Collect all results WITH filtering applied
         results = []
+        filtered_count = 0
         ticker_list = scanner.get_tickers()
         
         for ticker, source in ticker_list:
             result = scanner.scan_ticker(ticker, source)
             if result:
-                results.append(result)
+                if scanner.filter_result(result):  # Apply filters!
+                    results.append(result)
+                else:
+                    filtered_count += 1
         
         if not args.quiet:
             print("\n")  # Clear progress bar
+            if filtered_count > 0:
+                print(f"  Filtered out {filtered_count} stocks (EPS/Rev/Market Cap criteria)")
         
         # Special handling for shorts mode
         if mode in ['Shorts', 'ShortScan'] and analyze_short_candidate:
