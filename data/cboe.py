@@ -188,61 +188,44 @@ def get_cboe_ratios_and_analyze():
             
             daily_page = driver.page_source
             
-            # Look for VIX PUT/CALL RATIO in the page
-            # Pattern: "VIX" followed eventually by a decimal number like "0.77" or "1.23"
-            # The page has a section "CBOE VOLATILITY INDEX (VIX) PUT/CALL RATIO" with a value
+            # The daily page has both:
+            # - CBOE TOTAL PUT/CALL RATIO (e.g., 0.75)
+            # - CBOE VOLATILITY INDEX (VIX) PUT/CALL RATIO (e.g., 0.77)
+            # We need to find the VIX one specifically
             
-            # Try parsing tables first
-            try:
-                daily_dfs = pd.read_html(StringIO(daily_page))
-                print(f"  Found {len(daily_dfs)} tables (daily)")
-                
-                for df in daily_dfs:
-                    df_str = df.to_string().upper()
-                    if 'VIX' in df_str and 'PUT' in df_str and 'CALL' in df_str:
-                        # Look for ratio value in this table
-                        for col in df.columns:
-                            for val in df[col]:
-                                try:
-                                    val_float = float(val)
-                                    # VIX P/C ratio is typically between 0.3 and 2.0
-                                    if 0.2 < val_float < 3.0:
-                                        vix_pcr = val_float
-                                        print(f"  VIX P/C: {vix_pcr:.2f}")
-                                        break
-                                except (ValueError, TypeError):
-                                    continue
-                            if vix_pcr:
-                                break
-                    if vix_pcr:
-                        break
-            except Exception as e:
-                print(f"  Daily table parsing error: {e}")
+            # Method 1: Look for the specific VIX text pattern
+            # Pattern: "VOLATILITY INDEX (VIX)" ... "PUT/CALL" ... number
+            vix_section_pattern = r'VOLATILITY\s+INDEX\s*\(VIX\)[^0-9]*PUT[/\s]*CALL[^0-9]*RATIO[^0-9]*(\d+\.\d+)'
+            vix_match = re.search(vix_section_pattern, daily_page.upper())
             
-            # Fallback: regex for VIX P/C
-            if vix_pcr is None:
-                # Look for pattern like "VIX" ... "PUT/CALL" ... number
-                vix_pattern = r'VIX[^0-9]*PUT[/\s]*CALL[^0-9]*RATIO[^0-9]*(\d+\.?\d*)'
-                vix_match = re.search(vix_pattern, daily_page.upper())
-                if vix_match:
-                    try:
-                        vix_pcr = float(vix_match.group(1))
-                        if 0.2 < vix_pcr < 3.0:
-                            print(f"  VIX P/C (regex): {vix_pcr:.2f}")
-                        else:
-                            vix_pcr = None
-                    except ValueError:
+            if vix_match:
+                try:
+                    vix_pcr = float(vix_match.group(1))
+                    if 0.2 < vix_pcr < 3.0:
+                        print(f"  VIX P/C: {vix_pcr:.2f}")
+                    else:
                         vix_pcr = None
+                except ValueError:
+                    vix_pcr = None
+            
+            # Method 2: Find VIX section in page, extract the ratio
+            if vix_pcr is None:
+                # Look for "VIX" in the page, then find the associated ratio
+                # The page structure typically has the label followed by the value
+                # Find position of "VOLATILITY INDEX (VIX)" text
+                vix_label = "VOLATILITY INDEX (VIX)"
+                vix_pos = daily_page.upper().find(vix_label)
                 
-                # Alternative pattern: look for standalone decimal after VIX section
-                if vix_pcr is None:
-                    # Find position of "VIX" in text, then look for decimal nearby
-                    vix_pos = daily_page.upper().find('VOLATILITY INDEX (VIX)')
-                    if vix_pos > 0:
-                        # Look in next 500 chars for a decimal number
-                        search_area = daily_page[vix_pos:vix_pos+500]
+                if vix_pos > 0:
+                    # Look in next 200 chars for "PUT/CALL" and then a decimal
+                    search_area = daily_page[vix_pos:vix_pos+300]
+                    
+                    # Find decimals after PUT/CALL in this section
+                    pc_pos = search_area.upper().find('PUT')
+                    if pc_pos > 0:
+                        after_pc = search_area[pc_pos:]
                         decimal_pattern = r'(\d\.\d{2})'
-                        decimals = re.findall(decimal_pattern, search_area)
+                        decimals = re.findall(decimal_pattern, after_pc[:100])
                         for d in decimals:
                             try:
                                 val = float(d)

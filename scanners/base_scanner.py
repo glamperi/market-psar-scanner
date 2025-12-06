@@ -96,6 +96,8 @@ class ScanResult:
     market_cap: Optional[float] = None
     volume: Optional[float] = None
     dividend_yield: Optional[float] = None  # For dividend filtering
+    eps_growth: Optional[float] = None  # EPS growth % for filtering
+    rev_growth: Optional[float] = None  # Revenue growth % for filtering
     
     # For portfolio mode
     position_value: Optional[float] = None
@@ -289,6 +291,16 @@ class BaseScanner:
             
             market_cap = info.get('marketCap')  # In raw dollars
             
+            # Get EPS and Revenue growth
+            # yfinance returns these as decimals (0.15 = 15%)
+            eps_growth = info.get('earningsGrowth')
+            if eps_growth is not None:
+                eps_growth = eps_growth * 100  # Convert to percentage
+            
+            rev_growth = info.get('revenueGrowth')
+            if rev_growth is not None:
+                rev_growth = rev_growth * 100  # Convert to percentage
+            
             # Build result
             result = ScanResult(
                 ticker=ticker,
@@ -330,6 +342,8 @@ class BaseScanner:
                 ibd_url=ibd_url,
                 dividend_yield=dividend_yield,
                 market_cap=market_cap,
+                eps_growth=eps_growth,
+                rev_growth=rev_growth,
                 
                 indicators=indicators,
                 signal_data=signal
@@ -355,6 +369,20 @@ class BaseScanner:
         # Market cap filter
         if result.market_cap and result.market_cap < self.min_market_cap * 1_000_000:
             return False
+        
+        # EPS growth filter
+        if self.eps_filter is not None:
+            if result.eps_growth is None:
+                return False  # No EPS data, filter out
+            if result.eps_growth < self.eps_filter:
+                return False
+        
+        # Revenue growth filter
+        if self.rev_filter is not None:
+            if result.rev_growth is None:
+                return False  # No revenue data, filter out
+            if result.rev_growth < self.rev_filter:
+                return False
         
         return True
     
