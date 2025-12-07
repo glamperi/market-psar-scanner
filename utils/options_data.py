@@ -215,10 +215,8 @@ def _fetch_options_yahoo_scrape(ticker: str, min_days: int = 14, max_days: int =
             if exp_match:
                 timestamps = re.findall(r'(\d{10})', exp_match.group(1))
         
-        # If no timestamps found but consent page detected, use Selenium
+        # If no timestamps found, return None (consent page blocks scraping)
         if not timestamps:
-            if 'consent' in html.lower():
-                return _fetch_options_yahoo_selenium(ticker, min_days, max_days)
             return None
         
         today = datetime.now().date()
@@ -470,23 +468,17 @@ def fetch_options_chain(ticker: str, min_days: int = 14, max_days: int = 28, deb
     if debug:
         print(f"    [{ticker}] ✗ yfinance failed, trying Yahoo scrape...")
     
-    # Fallback to Yahoo scraping (may internally call Selenium if consent page detected)
+    # Fallback to Yahoo scraping
     result = _fetch_options_yahoo_scrape(ticker, min_days, max_days)
     if result:
         if debug:
             print(f"    [{ticker}] ✓ Yahoo scrape success (source: {result.get('source', 'unknown')})")
         return result
     if debug:
-        print(f"    [{ticker}] ✗ Yahoo scrape failed, trying Selenium...")
-    
-    # Final fallback - explicit Selenium call
-    result = _fetch_options_yahoo_selenium(ticker, min_days, max_days)
-    if result:
-        if debug:
-            print(f"    [{ticker}] ✓ Yahoo Selenium success")
-        return result
-    if debug:
         print(f"    [{ticker}] ✗ All sources failed")
+    
+    # Note: _fetch_options_yahoo_selenium() exists but is not called by default
+    # Enable manually if needed for debugging consent page issues
     
     return None
 
