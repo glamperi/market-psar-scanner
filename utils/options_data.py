@@ -342,19 +342,26 @@ def _fetch_options_yahoo_selenium(ticker: str, min_days: int = 14, max_days: int
         import time
         
         chrome_options = Options()
-        chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--headless=new")  # New headless mode
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
         chrome_options.add_argument("--disable-gpu")
-        chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        chrome_options.add_argument("--disable-extensions")
+        chrome_options.add_argument("--disable-plugins")
+        chrome_options.add_argument("--disable-images")  # Faster loading
+        chrome_options.add_argument("--blink-settings=imagesEnabled=false")
+        chrome_options.add_argument("--window-size=1920,1080")
+        chrome_options.add_argument("--disable-software-rasterizer")
+        chrome_options.add_argument("--remote-debugging-port=9222")
+        chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
         
         driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
-        driver.set_page_load_timeout(15)
+        driver.set_page_load_timeout(30)  # Increased for CI
         
         try:
             url = f"https://finance.yahoo.com/quote/{ticker}/options"
             driver.get(url)
-            time.sleep(4)
+            time.sleep(5)
             
             html = driver.page_source
             
@@ -370,16 +377,13 @@ def _fetch_options_yahoo_selenium(ticker: str, min_days: int = 14, max_days: int
                 return None
             
             # Extract expiration from contract name (e.g., 'MRK251212P00055000')
-            # Format: TICKER + YYMMDD + P/C + Strike
             target_exp = None
             if 'Contract Name' in puts_df.columns and len(puts_df) > 0:
                 contract = str(puts_df.iloc[0]['Contract Name'])
-                # Find the date part - 6 digits after ticker
                 ticker_len = len(ticker)
                 if len(contract) > ticker_len + 6:
                     date_str = contract[ticker_len:ticker_len+6]
                     try:
-                        # YYMMDD format
                         year = 2000 + int(date_str[0:2])
                         month = int(date_str[2:4])
                         day = int(date_str[4:6])
@@ -426,8 +430,7 @@ def _fetch_options_yahoo_selenium(ticker: str, min_days: int = 14, max_days: int
             driver.quit()
             
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        # Silent fail - let other sources try
         return None
 
 
