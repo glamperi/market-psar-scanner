@@ -188,84 +188,129 @@ def _fetch_options_yahoo_scrape(ticker: str, min_days: int = 14, max_days: int =
         # First get available expirations
         url = f"https://finance.yahoo.com/quote/{ticker}/options"
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Connection': 'keep-alive',
         }
         
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, headers=headers, timeout=15)
         if response.status_code != 200:
             return None
         
         html = response.text
         
+        # Check for rate limiting
+        if 'Too Many Requests' in html or response.status_code == 429:
+            return None
+        
         # Find expiration dates in the page
-        # They appear as Unix timestamps in the URL pattern: ?date=1234567890
-        date_pattern = r'\?date=(\d{10})'
+        date_pattern = r'[?&]date=(\d{10})'
         timestamps = re.findall(date_pattern, html)
         
         if not timestamps:
+            # Try alternative pattern
+            date_pattern2 = r'"expirationDates":\[([^\]]+)\]'
+            exp_match = re.search(date_pattern2, html)
+            if exp_match:
+                timestamps = re.findall(r'(\d{10})', exp_match.group(1))
+        
+        # If no timestamps found but consent page detected, use Selenium
+        if not timestamps:
+            if 'consent' in html.lower():
+                return _fetch_options_yahoo_selenium(ticker, min_days, max_days)
             return None
         
         today = datetime.now().date()
         target_timestamp = None
         target_exp = None
         
-        for ts in sorted(set(timestamps)):
-            exp_date = datetime.fromtimestamp(int(ts)).date()
-            days_to_exp = (exp_date - today).days
-            if min_days <= days_to_exp <= max_days:
-                target_timestamp = ts
-                target_exp = exp_date.strftime('%Y-%m-%d')
-                break
+        unique_timestamps = sorted(set(timestamps))
         
-        if not target_timestamp:
-            # Fallback to first >= min_days
-            for ts in sorted(set(timestamps)):
+        for ts in unique_timestamps:
+            try:
                 exp_date = datetime.fromtimestamp(int(ts)).date()
-                if (exp_date - today).days >= min_days:
+                days_to_exp = (exp_date - today).days
+                if min_days <= days_to_exp <= max_days:
                     target_timestamp = ts
                     target_exp = exp_date.strftime('%Y-%m-%d')
                     break
+            except (ValueError, OSError):
+                continue
+        
+        if not target_timestamp:
+            for ts in unique_timestamps:
+                try:
+                    exp_date = datetime.fromtimestamp(int(ts)).date()
+                    if (exp_date - today).days >= min_days:
+                        target_timestamp = ts
+                        target_exp = exp_date.strftime('%Y-%m-%d')
+                        break
+                except (ValueError, OSError):
+                    continue
         
         if not target_timestamp:
             return None
         
         # Fetch the specific expiration page
         url_with_date = f"https://finance.yahoo.com/quote/{ticker}/options?date={target_timestamp}"
-        response = requests.get(url_with_date, headers=headers, timeout=10)
+        response = requests.get(url_with_date, headers=headers, timeout=15)
         if response.status_code != 200:
             return None
         
         # Parse tables
         try:
             tables = pd.read_html(response.text)
-            # Usually puts are in the second table
+            
+            if not tables:
+                return None
+            
+            # Find puts table - second table with Strike column
             puts_df = None
+            found_first = False
+            
             for df in tables:
-                cols = [str(c).lower() for c in df.columns]
-                if 'strike' in cols and any('put' in c or 'bid' in c for c in cols):
-                    puts_df = df
-                    break
+                cols_lower = [str(c).lower() for c in df.columns]
+                if 'strike' in cols_lower:
+                    if found_first:
+                        puts_df = df
+                        break
+                    found_first = True
             
             if puts_df is None and len(tables) >= 2:
-                puts_df = tables[1]  # Second table is usually puts
+                puts_df = tables[1]
             
-            if puts_df is None:
+            if puts_df is None or puts_df.empty:
                 return None
             
             puts_list = []
             for _, row in puts_df.iterrows():
                 try:
-                    strike = float(str(row.get('Strike', 0)).replace(',', ''))
-                    bid = float(str(row.get('Bid', 0)).replace(',', '').replace('-', '0'))
-                    ask = float(str(row.get('Ask', 0)).replace(',', '').replace('-', '0'))
-                    last = float(str(row.get('Last Price', 0)).replace(',', '').replace('-', '0'))
+                    strike = None
+                    bid = 0
+                    ask = 0
+                    last = 0
                     
-                    puts_list.append({
-                        'strike': strike,
-                        'bid': bid,
-                        'ask': ask,
-                        'lastPrice': last
-                    })
+                    for col in row.index:
+                        col_lower = str(col).lower()
+                        val = row[col]
+                        
+                        if 'strike' in col_lower:
+                            strike = float(str(val).replace(',', ''))
+                        elif col_lower == 'bid':
+                            bid = float(str(val).replace(',', '').replace('-', '0'))
+                        elif col_lower == 'ask':
+                            ask = float(str(val).replace(',', '').replace('-', '0'))
+                        elif 'last' in col_lower or col_lower == 'price':
+                            last = float(str(val).replace(',', '').replace('-', '0'))
+                    
+                    if strike and strike > 0:
+                        puts_list.append({
+                            'strike': strike,
+                            'bid': bid,
+                            'ask': ask,
+                            'lastPrice': last
+                        })
                 except (ValueError, TypeError):
                     continue
             
@@ -285,7 +330,108 @@ def _fetch_options_yahoo_scrape(ticker: str, min_days: int = 14, max_days: int =
         return None
 
 
-def fetch_options_chain(ticker: str, min_days: int = 14, max_days: int = 28) -> Optional[Dict]:
+def _fetch_options_yahoo_selenium(ticker: str, min_days: int = 14, max_days: int = 28) -> Optional[Dict]:
+    """Fetch options using Selenium - parse tables directly."""
+    try:
+        import pandas as pd
+        from io import StringIO
+        from selenium import webdriver
+        from selenium.webdriver.chrome.options import Options
+        from selenium.webdriver.chrome.service import Service
+        from webdriver_manager.chrome import ChromeDriverManager
+        import time
+        
+        chrome_options = Options()
+        chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument("--disable-gpu")
+        chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        
+        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
+        driver.set_page_load_timeout(15)
+        
+        try:
+            url = f"https://finance.yahoo.com/quote/{ticker}/options"
+            driver.get(url)
+            time.sleep(4)
+            
+            html = driver.page_source
+            
+            # Parse tables directly - default page shows nearest expiration
+            tables = pd.read_html(StringIO(html))
+            if not tables or len(tables) < 2:
+                return None
+            
+            # Second table is puts
+            puts_df = tables[1]
+            
+            if puts_df.empty or 'Strike' not in puts_df.columns:
+                return None
+            
+            # Extract expiration from contract name (e.g., 'MRK251212P00055000')
+            # Format: TICKER + YYMMDD + P/C + Strike
+            target_exp = None
+            if 'Contract Name' in puts_df.columns and len(puts_df) > 0:
+                contract = str(puts_df.iloc[0]['Contract Name'])
+                # Find the date part - 6 digits after ticker
+                ticker_len = len(ticker)
+                if len(contract) > ticker_len + 6:
+                    date_str = contract[ticker_len:ticker_len+6]
+                    try:
+                        # YYMMDD format
+                        year = 2000 + int(date_str[0:2])
+                        month = int(date_str[2:4])
+                        day = int(date_str[4:6])
+                        target_exp = f"{year}-{month:02d}-{day:02d}"
+                    except:
+                        target_exp = datetime.now().strftime('%Y-%m-%d')
+            
+            if not target_exp:
+                target_exp = datetime.now().strftime('%Y-%m-%d')
+            
+            puts_list = []
+            for _, row in puts_df.iterrows():
+                try:
+                    strike = float(row.get('Strike', 0))
+                    bid = row.get('Bid', 0)
+                    ask = row.get('Ask', 0)
+                    last = row.get('Last Price', 0)
+                    
+                    # Handle '-' values
+                    bid = float(bid) if bid != '-' and pd.notna(bid) else 0
+                    ask = float(ask) if ask != '-' and pd.notna(ask) else 0
+                    last = float(last) if last != '-' and pd.notna(last) else 0
+                    
+                    if strike and strike > 0:
+                        puts_list.append({
+                            'strike': strike,
+                            'bid': bid,
+                            'ask': ask,
+                            'lastPrice': last
+                        })
+                except:
+                    continue
+            
+            if not puts_list:
+                return None
+            
+            return {
+                'expiration': target_exp,
+                'puts': puts_list,
+                'source': 'yahoo_selenium'
+            }
+            
+        finally:
+            driver.quit()
+            
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def fetch_options_chain(ticker: str, min_days: int = 14, max_days: int = 28, debug: bool = False) -> Optional[Dict]:
     """
     Fetch options chain using best available source.
     
@@ -293,25 +439,51 @@ def fetch_options_chain(ticker: str, min_days: int = 14, max_days: int = 28) -> 
     1. Schwab API (if credentials available)
     2. yfinance 
     3. Yahoo Finance HTML scraping
+    4. Yahoo Finance Selenium (handles consent page)
     
     Returns:
         Dict with 'expiration', 'puts', 'source' or None if all fail
     """
     # Try Schwab first if credentials exist
     if SCHWAB_CLIENT_ID:
+        if debug:
+            print(f"    [{ticker}] Trying Schwab API...")
         result = _fetch_options_schwab(ticker, min_days, max_days)
         if result:
+            if debug:
+                print(f"    [{ticker}] ✓ Schwab API success")
             return result
+        if debug:
+            print(f"    [{ticker}] ✗ Schwab API failed")
     
     # Try yfinance
+    if debug:
+        print(f"    [{ticker}] Trying yfinance...")
     result = _fetch_options_yfinance(ticker, min_days, max_days)
     if result:
+        if debug:
+            print(f"    [{ticker}] ✓ yfinance success")
         return result
+    if debug:
+        print(f"    [{ticker}] ✗ yfinance failed, trying Yahoo scrape...")
     
-    # Fallback to Yahoo scraping
+    # Fallback to Yahoo scraping (may internally call Selenium if consent page detected)
     result = _fetch_options_yahoo_scrape(ticker, min_days, max_days)
     if result:
+        if debug:
+            print(f"    [{ticker}] ✓ Yahoo scrape success (source: {result.get('source', 'unknown')})")
         return result
+    if debug:
+        print(f"    [{ticker}] ✗ Yahoo scrape failed, trying Selenium...")
+    
+    # Final fallback - explicit Selenium call
+    result = _fetch_options_yahoo_selenium(ticker, min_days, max_days)
+    if result:
+        if debug:
+            print(f"    [{ticker}] ✓ Yahoo Selenium success")
+        return result
+    if debug:
+        print(f"    [{ticker}] ✗ All sources failed")
     
     return None
 
