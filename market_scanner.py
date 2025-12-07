@@ -26,6 +26,21 @@ except ImportError:
 # Cache for FINRA short interest data (to avoid repeated API calls)
 _finra_short_cache = {}
 
+def get_short_interest_yfinance(ticker):
+    """Get short interest from yfinance for listed stocks."""
+    try:
+        import yfinance as yf
+        stock = yf.Ticker(ticker)
+        info = stock.info
+        short_pct = info.get('shortPercentOfFloat')  # Already decimal (0.0124 = 1.24%)
+        days_to_cover = info.get('shortRatio')
+        
+        if short_pct is not None:
+            return (short_pct * 100, days_to_cover)  # Return as percentage
+        return (None, None)
+    except:
+        return (None, None)
+
 # Note: Market sentiment (Put/Call ratio) is now handled by cboe.py using Selenium
 
 def get_finra_short_interest(ticker):
@@ -103,7 +118,7 @@ class MarketScanner:
         TSWCF,2.1,1.5
         """
         overrides = {}
-        csv_file = 'short_interest.csv'
+        csv_file = 'data_files/short_interest.csv'
         
         if os.path.exists(csv_file):
             try:
@@ -186,7 +201,7 @@ class MarketScanner:
     
     def load_sp500_tickers(self):
         """Load S&P 500 from CSV"""
-        csv_file = 'sp500_tickers.csv'
+        csv_file = 'data_files/sp500_tickers.csv'
         if os.path.exists(csv_file):
             try:
                 df = pd.read_csv(csv_file)
@@ -201,7 +216,7 @@ class MarketScanner:
     
     def load_nasdaq100_tickers(self):
         """Load NASDAQ 100 from CSV"""
-        csv_file = 'nasdaq100_tickers.csv'
+        csv_file = 'data_files/nasdaq100_tickers.csv'
         if os.path.exists(csv_file):
             try:
                 df = pd.read_csv(csv_file)
@@ -216,7 +231,7 @@ class MarketScanner:
     
     def load_russell2000_tickers(self):
         """Load Russell 2000 from CSV"""
-        csv_file = 'russell2000_tickers.csv'
+        csv_file = 'data_files/russell2000_tickers.csv'
         if os.path.exists(csv_file):
             try:
                 df = pd.read_csv(csv_file)
@@ -232,7 +247,7 @@ class MarketScanner:
     def load_adr_tickers(self):
         """Load ADR tickers - major international companies trading on US exchanges"""
         # First try to load from file
-        csv_file = 'adr_tickers.csv'
+        csv_file = 'data_files/adr_tickers.csv'
         if os.path.exists(csv_file):
             try:
                 df = pd.read_csv(csv_file)

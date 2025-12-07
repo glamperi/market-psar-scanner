@@ -488,3 +488,56 @@ def get_options_source_status() -> str:
     if SCHWAB_CLIENT_ID and SCHWAB_CLIENT_SECRET and SCHWAB_REFRESH_TOKEN:
         return "Schwab API"
     return "yfinance + Yahoo scrape fallback"
+
+
+def find_csp_puts(puts: list, current_price: float, min_ask_pct: float = 0.0005) -> dict:
+    """
+    Find buy and sell puts for CSP (Cash Secured Put) strategy.
+    
+    Args:
+        puts: List of put dicts with 'strike', 'bid', 'ask', 'lastPrice'
+        current_price: Current stock price
+        min_ask_pct: Minimum ask as percentage of stock price (default 0.05% = 0.0005)
+    
+    Returns:
+        Dict with 'buy_put', 'sell_put' or None values if not found
+    """
+    if not puts or current_price <= 0:
+        return {'buy_put': None, 'sell_put': None}
+    
+    min_ask = current_price * min_ask_pct  # e.g., $100 * 0.0005 = $0.05
+    
+    # Sort puts by strike descending
+    sorted_puts = sorted(puts, key=lambda x: x.get('strike', 0), reverse=True)
+    
+    buy_put = None   # Higher strike, closer to current price (more expensive)
+    sell_put = None  # Lower strike, further OTM (cheaper)
+    
+    for put in sorted_puts:
+        strike = put.get('strike', 0)
+        ask = put.get('ask', 0)
+        bid = put.get('bid', 0)
+        
+        # Skip if strike is above current price (ITM)
+        if strike >= current_price:
+            continue
+        
+        # Skip if ask is below minimum threshold
+        if ask < min_ask:
+            continue
+        
+        # Skip if no meaningful bid/ask
+        if ask <= 0:
+            continue
+        
+        # First valid put becomes buy_put (closest OTM)
+        if buy_put is None:
+            buy_put = put
+        else:
+            # Subsequent puts with lower strikes become sell_put candidates
+            sell_put = put
+    
+    return {
+        'buy_put': buy_put,
+        'sell_put': sell_put
+    }
