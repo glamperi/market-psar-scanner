@@ -303,43 +303,30 @@ def get_put_spread_recommendation(
     
     Strategy: Buy higher strike put (delta ~0.40), sell lower strike put (delta ~0.15)
     Expiration: 2-4 weeks
+    
+    Uses fallback chain: Schwab API -> yfinance -> Yahoo scrape
     """
     try:
-        stock = yf.Ticker(ticker)
-        expirations = stock.options
-        if not expirations:
+        # Use unified options fetcher with fallback chain
+        from utils.options_data import fetch_options_chain
+        
+        options_data = fetch_options_chain(ticker, min_days, max_days)
+        if not options_data:
             return None
         
-        today = datetime.now().date()
-        target_exp = None
+        target_exp = options_data['expiration']
+        puts_list = options_data['puts']
+        source = options_data.get('source', 'unknown')
         
-        # Find expiration in target range
-        for exp_str in expirations:
-            exp_date = datetime.strptime(exp_str, '%Y-%m-%d').date()
-            days_to_exp = (exp_date - today).days
-            if min_days <= days_to_exp <= max_days:
-                target_exp = exp_str
-                break
-        
-        if not target_exp:
-            # Fallback to first available >= min_days
-            for exp_str in expirations:
-                exp_date = datetime.strptime(exp_str, '%Y-%m-%d').date()
-                if (exp_date - today).days >= min_days:
-                    target_exp = exp_str
-                    break
-        
-        if not target_exp:
+        if not puts_list:
             return None
         
-        chain = stock.option_chain(target_exp)
-        puts = chain.puts
+        # Convert to DataFrame-like structure for processing
+        import pandas as pd
+        puts = pd.DataFrame(puts_list)
+        
         if puts.empty:
             return None
-        
-        # Filter to reasonable strikes
-        # Buy put: slightly ITM or ATM (strike near or above current price)
-        # Sell put: OTM (strike below current price)
         
         # Buy put target: delta ~0.40 = roughly ATM or slightly ITM
         buy_target_strike = current_price * 1.05  # 5% ITM
@@ -382,6 +369,7 @@ def get_put_spread_recommendation(
         spread_cost = buy_mid - sell_mid  # Net debit
         max_profit = buy_strike - sell_strike - spread_cost  # Max profit at expiration
         
+        today = datetime.now().date()
         exp_date = datetime.strptime(target_exp, '%Y-%m-%d').date()
         days_to_exp = (exp_date - today).days
         
@@ -394,11 +382,12 @@ def get_put_spread_recommendation(
             'max_profit': max_profit,
             'buy_premium': buy_mid,
             'sell_premium': sell_mid,
+            'source': source
         }
         
     except Exception as e:
         error_msg = str(e)
-        # Only print warning for non-rate-limit errors or first occurrence
+        # Only print warning for non-rate-limit errors
         if 'Too Many Requests' not in error_msg:
             print(f"    Warning: Could not get put spread for {ticker}: {e}")
         return None

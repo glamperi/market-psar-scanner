@@ -223,10 +223,34 @@ AMC,18.2
 ## Environment Variables
 
 ```bash
+# Email (required)
 GMAIL_EMAIL=your-email@gmail.com
 GMAIL_PASSWORD=your-app-password  # Use Gmail App Password
 RECIPIENT_EMAIL=recipient@email.com
+
+# Schwab API (optional - for reliable options data)
+SCHWAB_CLIENT_ID=your-client-id
+SCHWAB_CLIENT_SECRET=your-client-secret
+SCHWAB_REFRESH_TOKEN=your-refresh-token
 ```
+
+## Options Data Sources
+
+The scanner fetches options data for covered calls and put spreads using a fallback chain:
+
+| Priority | Source | Notes |
+|----------|--------|-------|
+| 1 | Schwab API | Requires developer account at developer.schwab.com |
+| 2 | yfinance | Default, may be rate limited |
+| 3 | Yahoo HTML scrape | Fallback when yfinance fails |
+
+### Schwab API Setup
+1. Sign up at https://developer.schwab.com
+2. Create an application
+3. Complete OAuth flow to get refresh token
+4. Add credentials to environment or GitHub secrets
+
+If Schwab credentials are not set, the scanner automatically falls back to yfinance, then Yahoo scraping.
 
 ## Requirements
 
