@@ -306,7 +306,7 @@ class PortfolioReport:
             fid_base = "https://researchtools.fidelity.com/ftgw/mloptions/goto/plCalculator"
             fid_sellc = f"{fid_base}?ulSymbol={ticker}&ulSecurity=E&ulAction=I&ulQuantity=0&strategy=SL&optSymbol1=-{ticker}{exp_yymmdd}C{strike_int}&optSecurity1=O&optAction1=S&optExp1={exp_mmddyyyy}&optStrike1={strike_int}&optType1=C&optQuantity1=1"
             
-            return f'<a href="{optionstrat_url}" target="_blank" style="color:#007bff;">📊 Trade</a><br><a href="{fid_sellc}" target="_blank" style="font-size:10px;">F-SellC</a>'
+            return f'<a href="{optionstrat_url}" target="_blank" style="color:#007bff;">📊 Trade</a> | <a href="{fid_sellc}" target="_blank" style="font-size:10px;">F-SellC</a>'
         except:
             return "-"
     
