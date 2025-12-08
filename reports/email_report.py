@@ -11,7 +11,14 @@ from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
 
 # Import the fixed Cboe script
-from data.cboe import get_cboe_ratios_and_analyze 
+try:
+    from data.cboe import get_cboe_ratios_and_analyze
+except ImportError:
+    try:
+        from cboe import get_cboe_ratios_and_analyze
+    except ImportError:
+        def get_cboe_ratios_and_analyze():
+            return "CBOE data unavailable"
 
 EXIT_HISTORY_FILE = 'exit_history.json'
 
@@ -153,8 +160,12 @@ class EmailReport:
             ma50 = '✓' if r.get('above_ma50', False) else ''
             price = f"${r.get('current_price', r.get('price', 0.0)):.2f}"
             
-            # Add IBD Star if available and configured in your scanner
-            star = '⭐' if r.get('ibd_url') else ''
+            # Add IBD Star with clickable link if URL available
+            ibd_url = r.get('ibd_url')
+            if ibd_url:
+                star = f"<a href='{ibd_url}' target='_blank' style='text-decoration:none;'>⭐</a>"
+            else:
+                star = ''
             
             html += f"<tr><td><a href='https://finance.yahoo.com/quote/{ticker}'>{ticker}</a>{star}</td><td>{zone}</td><td>{days}</td><td>{psar_perc}</td><td>{obv}</td><td>{prsi}</td><td>{macd}</td><td>{ma50}</td><td>{price}</td></tr>"
 
@@ -209,35 +220,22 @@ class EmailReport:
         html += self.get_market_sentiment_html()
         # ------------------------------------
 
-        html += "<div class='section-header section-sentiment'>HPSAR ZONE & MOMENTUM GUIDE</div>"
-        # Assuming you have a _generate_guide_table_html method or a static guide string
+        html += "<div class='section-header section-sentiment'>PSAR ZONE GUIDE</div>"
         html += """
         <table class='guide-table'>
             <thead><tr><th>Zone</th><th>PSAR %</th><th>Criteria</th><th>Action</th></tr></thead>
             <tbody>
-                <tr><td>🟢🟢🟢 TOP TIER</td><td>> +5%</td><td>+ Mom≥7 + IR≥40 + Above 50MA + OBV=CONFIRM</td><td>BUY with confidence</td></tr>
-                <tr><td>🟢🟢 STRONG BUY</td><td>> +5%</td><td>Strong uptrend</td><td>BUY / Hold</td></tr>
+                <tr><td>🟢🟢 STRONG BUY</td><td>> +5%</td><td>Strong uptrend confirmed</td><td>BUY / Hold</td></tr>
                 <tr><td>🟢 BUY</td><td>+2% to +5%</td><td>Healthy uptrend</td><td>Hold / Add on dips</td></tr>
                 <tr><td>🟡 NEUTRAL</td><td>-2% to +2%</td><td>Could go either way</td><td>Watch closely</td></tr>
-                <tr><td>🟠 WEAK</td><td>-2% to -5%</td><td>Downtrend, might reverse</td><td>Caution / Covered calls</td></tr>
+                <tr><td>🟠 WEAK</td><td>-2% to -5%</td><td>Downtrend starting</td><td>Caution</td></tr>
                 <tr><td>🔴 SELL</td><td>< -5%</td><td>Confirmed downtrend</td><td>Exit or hedge</td></tr>
             </tbody>
         </table>
         """
 
-        # Prepare grouped results
-        all_strong = [r for r in self.all_results if r.get('psar_zone') == 'STRONG_BUY']
-        top_tier = [r for r in all_strong if 
-                    r.get('psar_momentum', 0) >= 7 and 
-                    r.get('signal_weight', 0) >= 40 and 
-                    r.get('above_ma50', False) and
-                    r.get('obv_status', 'NEUTRAL') == 'CONFIRM']
-        
-        # Remove top_tier from strong_buy list
-        strong_buy_tickers = {r['ticker'] for r in all_strong}
-        top_tier_tickers = {r['ticker'] for r in top_tier}
-        strong_buy = [r for r in all_strong if r['ticker'] not in top_tier_tickers]
-
+        # Prepare grouped results - market scan focuses on BUY zones only
+        strong_buy = [r for r in self.all_results if r.get('psar_zone') == 'STRONG_BUY']
         buy = [r for r in self.all_results if r.get('psar_zone') == 'BUY']
         neutral = [r for r in self.all_results if r.get('psar_zone') == 'NEUTRAL']
         weak = [r for r in self.all_results if r.get('psar_zone') == 'WEAK']
@@ -253,40 +251,33 @@ class EmailReport:
                 html += f"<tr><td>{r['ticker']}</td><td>{exit_date}</td><td>{price}</td><td>{r['psar_zone']}</td><td>{r['psar_momentum']}</td></tr>"
             html += "</tbody></table>"
 
-        # 1. TOP TIER BUYS
-        if top_tier:
-            html += f"<div class='section-header section-top-tier'>🟢🟢🟢 TOP TIER BUYS ({len(top_tier)} positions)</div>"
-            html += self._generate_table_html(top_tier, 'top-tier')
-            
-        # 2. STRONG BUYS
+        # 1. STRONG BUYS
         if strong_buy:
-            html += f"<div class='section-header section-strong-buy'>🟢🟢 STRONG BUY ZONE ({len(strong_buy)} positions)</div>"
+            html += f"<div class='section-header section-strong-buy'>🟢🟢 STRONG BUY ZONE ({len(strong_buy)} stocks)</div>"
             html += self._generate_table_html(strong_buy, 'strong-buy')
 
-        # 3. BUYS
+        # 2. BUYS
         if buy:
             html += f"<div class='section-header section-buy'>🟢 BUY ZONE ({len(buy)} positions)</div>"
             html += self._generate_table_html(buy, 'buy')
-            
-        # 4. NEUTRAL
-        if neutral:
-            html += f"<div class='section-header section-neutral'>🟡 NEUTRAL ZONE ({len(neutral)} positions)</div>"
-            html += self._generate_table_html(neutral, 'neutral')
 
-        # 5. WEAK
-        if weak:
-            html += f"<div class='section-header section-weak'>🟠 WEAK ZONE (Covered Call Opportunities) ({len(weak)} positions)</div>"
-            html += self._generate_table_html(weak, 'weak')
-
-        # 6. SELL
-        if sell:
-            html += f"<div class='section-header section-sell'>🔴 SELL ZONE (Recommend Exit / Hedge) ({len(sell)} positions)</div>"
-            html += self._generate_table_html(sell, 'sell')
+        # Note: Market scan focuses on BUY opportunities only
+        # NEUTRAL/WEAK/SELL zones are omitted - use -mystocks or -friends for full portfolio view
 
         # Watchlist Results
         if self.watchlist_results:
             html += f"<div class='section-header section-sentiment'>⭐ WATCHLIST SCAN ({len(self.watchlist_results)} stocks)</div>"
             html += self._generate_table_html(self.watchlist_results, 'watchlist')
+
+        # Summary counts at bottom
+        html += f"""<div style='margin-top:20px;padding:10px;background:#f5f5f5;font-size:11px;'>
+        <strong>Full Market Summary:</strong> 
+        🟢🟢 Strong Buy: {len(strong_buy)} | 
+        🟢 Buy: {len(buy)} | 
+        🟡 Neutral: {len(neutral)} | 
+        🟠 Weak: {len(weak)} | 
+        🔴 Sell: {len(sell)}
+        </div>"""
 
         html += "</body></html>"
         return html
@@ -303,18 +294,12 @@ class EmailReport:
             print("\n❌ ERROR: Missing email credentials")
             return
         
-        # Count tiers for subject
-        all_strong = [r for r in self.all_results if r.get('psar_zone') == 'STRONG_BUY']
-        top_tier = len([r for r in all_strong if 
-                    r.get('psar_momentum', 0) >= 7 and 
-                    r.get('signal_weight', 0) >= 40 and 
-                    r.get('above_ma50', False) and
-                    r.get('obv_status', 'NEUTRAL') == 'CONFIRM'])
-        strong_buy = len(all_strong) - top_tier
+        # Count zones for subject
+        strong_buy = len([r for r in self.all_results if r.get('psar_zone') == 'STRONG_BUY'])
         buy = len([r for r in self.all_results if r.get('psar_zone') == 'BUY'])
         
         msg = MIMEMultipart('alternative')
-        msg['Subject'] = f"📈 Market: {top_tier} Top Tier, {strong_buy} Strong, {buy} Buy - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        msg['Subject'] = f"📈 Market Scan: {strong_buy} Strong Buy, {buy} Buy - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
         msg['From'] = sender_email
         
         # Build recipient list
