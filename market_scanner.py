@@ -300,26 +300,33 @@ class MarketScanner:
         return major_adrs
     
     def get_dividend_yield(self, ticker_obj):
-        """Get dividend yield for a ticker - uses dividendRate/price calculation"""
+        """Get dividend yield for a ticker - FIXED VERSION with validation"""
         try:
             info = ticker_obj.info
             
-            # Primary method: Calculate from dividendRate and price (most reliable)
+            # Method 1: Direct dividendYield (yfinance returns as decimal, e.g., 0.02 = 2%)
+            div_yield = info.get('dividendYield', None)
+            if div_yield and div_yield > 0:
+                # Check if it's already a percentage (>1) or decimal (<1)
+                if div_yield > 1:
+                    # Already a percentage, don't multiply
+                    result = round(div_yield, 2)
+                else:
+                    # Decimal form, convert to percentage
+                    result = round(div_yield * 100, 2)
+                
+                # Sanity check - cap at 25% (anything higher is likely an error)
+                if result > 25:
+                    return 0.0
+                return result
+            
+            # Method 2: Calculate from dividendRate and price
             div_rate = info.get('dividendRate', None)
             price = info.get('currentPrice', info.get('regularMarketPrice', None))
             
             if div_rate and price and div_rate > 0 and price > 0:
                 result = round((div_rate / price) * 100, 2)
-                # Sanity check - cap at 25%
-                if result > 25:
-                    return 0.0
-                return result
-            
-            # Fallback: Use trailingAnnualDividendYield if available
-            trailing_yield = info.get('trailingAnnualDividendYield', None)
-            if trailing_yield and trailing_yield > 0:
-                # This is already a decimal (0.02 = 2%)
-                result = round(trailing_yield * 100, 2)
+                # Sanity check
                 if result > 25:
                     return 0.0
                 return result
@@ -1317,7 +1324,7 @@ if __name__ == "__main__":
     parser.add_argument('-rev', type=float, default=None, help='Minimum revenue growth %% (e.g., -rev 15 for 15%% growth)')
     parser.add_argument('-mc', type=float, default=None, help='Minimum market cap in billions (e.g., -mc 1 for $1B+, default is 10)')
     parser.add_argument('-adr', action='store_true', help='Include international ADRs (American Depositary Receipts)')
-    parser.add_argument('-lookup', type=str, metavar='TICKER', help='Lookup single ticker with full analysis (e.g., -lookup NVDA)')
+    parser.add_argument('-lookup', type=str, metavar='TICKER', help='Detailed analysis of a single ticker')
     
     args = parser.parse_args()
     
@@ -1396,90 +1403,102 @@ if __name__ == "__main__":
         
         return results
     
-    # Single ticker lookup mode
+    # Handle single ticker lookup
     if args.lookup:
         ticker = args.lookup.upper()
-        print("\n" + "="*60)
-        print(f"  SINGLE TICKER LOOKUP: {ticker}")
-        print("="*60)
-        scanner.load_ibd_stats()
+        print(f"\n{'='*60}")
+        print(f"  {ticker} ANALYSIS")
+        print(f"{'='*60}")
+        
+        # Scan the ticker
         result = scanner.scan_ticker_full(ticker, source="Lookup", skip_market_cap_filter=True)
-        if result:
-            print("\n" + "="*50)
-            print(f"  {ticker} ANALYSIS")
-            print("="*50)
-            print(f"  Price:        ${result['price']:.2f}")
-            print(f"  PSAR Zone:    {result['psar_zone']}")
-            print(f"  PSAR %:       {result['psar_distance']:+.1f}%")
-            print(f"  Days Signal:  {result.get('days_since_signal', '?')}")
-            print(f"  Momentum:     {result.get('psar_momentum', '?')}")
-            prsi_txt = "↗️ Bullish" if result.get('prsi_bullish') else "↘️ Bearish"
-            print(f"  PRSI:         {prsi_txt}")
-            print(f"  OBV:          {result.get('obv_status', '?')}")
-            macd_txt = "✓ Bullish" if result.get('has_macd') else "✗ Bearish"
-            print(f"  MACD:         {macd_txt}")
-            ma50_txt = "✓ Yes" if result.get('above_ma50') else "✗ No"
-            print(f"  Above 50MA:   {ma50_txt}")
-            print(f"  RSI:          {result.get('rsi', 0):.0f}")
-            print(f"  ATR Status:   {result.get('atr_status', '?')} ({result.get('atr_pct', 0):+.0f}%)")
-            print(f"  IR Score:     {result.get('signal_weight', 0)}")
-            if result.get('dividend_yield', 0) > 0:
-                print(f"  Div Yield:    {result['dividend_yield']:.2f}%")
-            if result.get('ibd_url'):
-                print(f"  IBD Stock:    ⭐ Yes")
-                print(f"  IBD URL:      {result['ibd_url']}")
+        
+        if not result:
+            print(f"❌ Could not analyze {ticker}")
+            exit(1)
+        
+        # Display basic info - using correct field names
+        price = result.get('price', 0)
+        psar_zone = result.get('psar_zone', 'N/A')
+        psar_pct = result.get('psar_distance', 0)
+        days = result.get('days_since_signal', 'N/A')
+        momentum = result.get('psar_momentum', 'N/A')
+        prsi_bullish = result.get('prsi_bullish', False)
+        obv_status = result.get('obv_status', 'N/A')
+        has_macd = result.get('has_macd', False)
+        above_ma50 = result.get('above_ma50', False)
+        rsi = result.get('rsi', 0)
+        atr_status = result.get('atr_status', 'N/A')
+        atr_pct = result.get('atr_pct', 0)
+        signal_weight = result.get('signal_weight', 0)
+        div_yield = result.get('dividend_yield', 0)
+        ibd_url = result.get('ibd_url', '')
+        entry_grade = result.get('entry_grade', 'N/A')
+        pct_off_high = result.get('pct_off_high', 0)
+        
+        # Format PRSI display
+        prsi_display = '↗️ Bullish' if prsi_bullish else '↘️ Bearish'
+        
+        print(f"  Price:        ${price:.2f}")
+        print(f"  PSAR Zone:    {psar_zone}")
+        print(f"  PSAR %:       {psar_pct:+.1f}%")
+        print(f"  Days Signal:  {days}")
+        print(f"  Momentum:     {momentum}/10")
+        print(f"  PRSI:         {prsi_display}")
+        print(f"  OBV:          {obv_status}")
+        print(f"  MACD:         {'✓ Bullish' if has_macd else '- Bearish'}")
+        print(f"  Above 50MA:   {'✓ Yes' if above_ma50 else '- No'}")
+        print(f"  RSI:          {rsi:.1f}")
+        print(f"  ATR Status:   {atr_status} ({atr_pct:+.1f}%)")
+        print(f"  Signal Wt:    {signal_weight}")
+        print(f"  Entry Grade:  {entry_grade}")
+        print(f"  % Off High:   {pct_off_high:.1f}%")
+        print(f"  Div Yield:    {div_yield:.2f}%")
+        print(f"  IBD Stock:    {'⭐ Yes' if ibd_url else 'No'}")
+        if ibd_url:
+            print(f"  IBD URL:      {ibd_url}")
+        
+        # Get covered call suggestion if in NEUTRAL/WEAK/SELL zone
+        if psar_zone in ['NEUTRAL', 'WEAK', 'SELL']:
+            print(f"\n{'='*60}")
+            print(f"  📞 COVERED CALL SUGGESTION")
+            print(f"{'='*60}")
             
-            # Covered call suggestion for NEUTRAL/WEAK/SELL
-            if result['psar_zone'] in ['NEUTRAL', 'WEAK', 'SELL']:
-                print("\n" + "-"*50)
-                print("  📞 COVERED CALL SUGGESTION")
-                print("-"*50)
-                try:
-                    import yfinance as yf
-                    from datetime import datetime
-                    stock = yf.Ticker(ticker)
-                    expirations = stock.options
-                    if expirations:
-                        today = datetime.now()
-                        best_exp = None
-                        for exp_str in expirations:
-                            dte = (datetime.strptime(exp_str, '%Y-%m-%d') - today).days
-                            if 21 <= dte <= 60:
-                                best_exp = exp_str
-                                break
-                        if not best_exp and expirations:
-                            for exp_str in expirations:
-                                if (datetime.strptime(exp_str, '%Y-%m-%d') - today).days >= 14:
-                                    best_exp = exp_str
-                                    break
-                        if best_exp:
-                            calls = stock.option_chain(best_exp).calls
-                            otm_calls = calls[calls['strike'] > result['price']]
-                            target_strike = result['price'] * 1.08
-                            target_calls = otm_calls[otm_calls['strike'] >= target_strike]
-                            if not target_calls.empty:
-                                best_call = target_calls.iloc[0]
-                            elif not otm_calls.empty:
-                                best_call = otm_calls.iloc[0]
-                            else:
-                                best_call = None
-                            if best_call is not None:
-                                strike = best_call['strike']
-                                mid = (best_call['bid'] + best_call['ask']) / 2
-                                dte = (datetime.strptime(best_exp, '%Y-%m-%d') - today).days
-                                upside = ((strike - result['price']) / result['price']) * 100
-                                ann_yield = ((mid / result['price']) * 100 / dte) * 365 if dte > 0 else 0
-                                print(f"  Expiration:   {best_exp} ({dte} days)")
-                                print(f"  Strike:       ${strike:.2f} (+{upside:.1f}% upside)")
-                                print(f"  Premium:      ${mid:.2f}")
-                                print(f"  Ann. Yield:   {ann_yield:.0f}%")
-                except Exception as e:
-                    print(f"  Could not get options data: {e}")
-            
-            print("="*50)
+            try:
+                from data.schwab_options import get_covered_call_suggestion
+                suggestion = get_covered_call_suggestion(ticker, price)
+                
+                if suggestion:
+                    exp = suggestion['expiration']
+                    dte = suggestion['days_to_exp']
+                    strike = suggestion['strike']
+                    premium = suggestion['premium']
+                    upside = suggestion['upside_pct']
+                    ann_yield = suggestion['annualized_yield']
+                    source = suggestion['source']
+                    
+                    print(f"  Source:       {source}")
+                    print(f"  Expiration:   {exp} ({dte} days)")
+                    print(f"  Strike:       ${strike:.2f} ({upside:+.1f}% OTM)")
+                    print(f"  Premium:      ${premium:.2f} ({suggestion['premium_pct']:.2f}%)")
+                    print(f"  Annualized:   {ann_yield:.1f}%")
+                    
+                    # Build trade links
+                    exp_yymmdd = exp[2:4] + exp[5:7] + exp[8:10]
+                    strike_int = int(strike)
+                    optionstrat_url = f"https://optionstrat.com/build/covered-call/{ticker}/{ticker}x100,-.{ticker}{exp_yymmdd}C{strike_int}"
+                    print(f"\n  📊 OptionStrat: {optionstrat_url}")
+                else:
+                    print("  ⚠️  Could not find suitable options")
+            except ImportError:
+                print("  ⚠️  schwab_options not available - run: pip install schwabdev")
+            except Exception as e:
+                print(f"  ⚠️  Error getting options: {e}")
         else:
-            print(f"\n  ✗ Could not get data for {ticker}")
-        sys.exit(0)
+            print(f"\n  ℹ️  Stock is in {psar_zone} zone - no covered call needed")
+        
+        print(f"\n{'='*60}")
+        exit(0)
     
     # Determine scan mode
     if args.mystocks:

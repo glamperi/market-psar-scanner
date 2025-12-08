@@ -29,39 +29,76 @@ class ShortsReport:
         - Optionally sell OTM put at support level to reduce cost (put debit spread)
         
         Expiration: 21-45 days for SELL signals
+        
+        Uses Schwab API first (more reliable), falls back to yfinance.
         """
+        # Try Schwab first for options chain
+        puts = None
+        best_exp = None
+        dte = None
+        source = 'yfinance'
+        
         try:
-            stock = yf.Ticker(ticker)
-            expirations = stock.options
-            if not expirations:
-                return None
-            
-            today = datetime.now()
-            best_exp = None
-            
-            # Look for 21-45 day expiration 
-            for exp_str in expirations:
-                dte = (datetime.strptime(exp_str, '%Y-%m-%d') - today).days
-                if 18 <= dte <= 50:
-                    best_exp = exp_str
-                    break
-            
-            # Fallback to anything 14+ days
-            if not best_exp:
+            from data.schwab_options import get_options_chain as schwab_chain
+            chain = schwab_chain(ticker, days_out=50)
+            if chain and not chain['puts'].empty:
+                puts_df = chain['puts'].copy()
+                puts_df['exp_date'] = pd.to_datetime(puts_df['expiration'])
+                today = datetime.now()
+                puts_df['dte'] = (puts_df['exp_date'] - today).dt.days
+                
+                # Filter to 18-50 days
+                valid_puts = puts_df[(puts_df['dte'] >= 18) & (puts_df['dte'] <= 50)]
+                if not valid_puts.empty:
+                    # Get first valid expiration
+                    best_exp = valid_puts['expiration'].iloc[0]
+                    dte = valid_puts['dte'].iloc[0]
+                    puts = valid_puts[valid_puts['expiration'] == best_exp].copy()
+                    source = chain['source']
+        except ImportError:
+            pass  # Schwab not available
+        except Exception:
+            pass  # Schwab failed
+        
+        # Fallback to yfinance if Schwab didn't work
+        if puts is None or puts.empty:
+            try:
+                stock = yf.Ticker(ticker)
+                expirations = stock.options
+                if not expirations:
+                    return None
+                
+                today = datetime.now()
+                best_exp = None
+                
+                # Look for 21-45 day expiration 
                 for exp_str in expirations:
                     dte = (datetime.strptime(exp_str, '%Y-%m-%d') - today).days
-                    if dte >= 14:
+                    if 18 <= dte <= 50:
                         best_exp = exp_str
                         break
-            
-            if not best_exp:
+                
+                # Fallback to anything 14+ days
+                if not best_exp:
+                    for exp_str in expirations:
+                        dte = (datetime.strptime(exp_str, '%Y-%m-%d') - today).days
+                        if dte >= 14:
+                            best_exp = exp_str
+                            break
+                
+                if not best_exp:
+                    return None
+                
+                puts = stock.option_chain(best_exp).puts
+                if puts.empty:
+                    return None
+                
+                dte = (datetime.strptime(best_exp, '%Y-%m-%d') - today).days
+                source = 'yfinance'
+            except:
                 return None
-            
-            puts = stock.option_chain(best_exp).puts
-            if puts.empty:
-                return None
-            
-            dte = (datetime.strptime(best_exp, '%Y-%m-%d') - today).days
+        
+        try:
             
             # ==========================================
             # FIND DEEP ITM PUT (delta ~0.97)
@@ -156,6 +193,7 @@ class ShortsReport:
                 'extrinsic_pct': extrinsic_pct,
                 'itm_pct': itm_pct,
                 'est_delta': est_delta,
+                'source': source,
             }
             
             # ==========================================

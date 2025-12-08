@@ -13,24 +13,13 @@ import yfinance as yf
 
 # Import IBD utilities for formatting
 try:
-    from data.ibd_utils import format_ibd_ticker
+    from ibd_utils import format_ibd_ticker
 except ImportError:
-    try:
-        from ibd_utils import format_ibd_ticker
-    except ImportError:
-        format_ibd_ticker = None
+    format_ibd_ticker = None
 
 
 class PortfolioReport:
     def __init__(self, scan_results, position_values=None, is_friends_mode=False, display_mode='v2', experiment_mode=False):
-        """
-        Args:
-            scan_results: Dict with 'all_results' key
-            position_values: Dict of ticker -> position value
-            is_friends_mode: True for friends watchlist mode
-            display_mode: 'v1' (Mom/IR) or 'v2' (Days/MACD/50MA)
-            experiment_mode: True to show both V1 and V2 side-by-side
-        """
         self.all_results = scan_results['all_results']
         self.position_values = position_values or {}
         self.is_friends_mode = is_friends_mode
@@ -194,9 +183,30 @@ class PortfolioReport:
     def get_covered_call_recommendation(self, ticker, current_price):
         """
         Get covered call recommendation.
+        Uses Schwab API first (more reliable), falls back to yfinance.
         Strike selection: max(8% above price, delta ~0.10 strike)
-        Whichever is FURTHER from current price.
         """
+        # Try Schwab options first
+        try:
+            from data.schwab_options import get_covered_call_suggestion
+            suggestion = get_covered_call_suggestion(ticker, current_price, min_days=21, max_days=60, target_otm_pct=8.0)
+            if suggestion:
+                return {
+                    'expiration': suggestion['expiration'],
+                    'strike': suggestion['strike'],
+                    'mid_price': suggestion['premium'],
+                    'dte': suggestion['days_to_exp'],
+                    'premium_pct': suggestion['premium_pct'],
+                    'annualized_yield': suggestion['annualized_yield'],
+                    'upside_to_strike': suggestion['upside_pct'],
+                    'source': suggestion['source']
+                }
+        except ImportError:
+            pass  # schwab_options not available, fall through to yfinance
+        except Exception:
+            pass  # Schwab failed, fall through to yfinance
+        
+        # Fallback to yfinance
         try:
             stock = yf.Ticker(ticker)
             expirations = stock.options
@@ -275,7 +285,8 @@ class PortfolioReport:
                 'expiration': best_exp, 'strike': strike, 'mid_price': mid_price, 'dte': dte,
                 'premium_pct': (mid_price / current_price) * 100,
                 'annualized_yield': ((mid_price / current_price) * 100 / dte) * 365 if dte > 0 else 0,
-                'upside_to_strike': ((strike - current_price) / current_price) * 100
+                'upside_to_strike': ((strike - current_price) / current_price) * 100,
+                'source': 'yfinance'
             }
         except:
             return None
@@ -460,10 +471,10 @@ class PortfolioReport:
                         html += f"<h4 style='color:{self.get_zone_color(zone_key)};'>{self.get_zone_emoji(zone_key)} {zone_key} ({len(zone_list)}, {self.format_value(zone_val)})</h4>"
                         html += self._build_table_with_value(zone_list, zone_class)
             
-            # COVERED CALLS - only for mystocks mode, high ATR stocks only (>=5%)
-            cc_candidates = [r for r in concentrated if r.get('psar_zone') in ['NEUTRAL', 'WEAK', 'SELL'] and abs(r.get('atr_pct', 0)) >= 5] if concentrated else []
+            # COVERED CALLS - only for mystocks mode
+            cc_candidates = [r for r in concentrated if r.get('psar_zone') in ['NEUTRAL', 'WEAK', 'SELL']] if concentrated else []
             if cc_candidates:
-                html += "<div class='section-blue'>📞 COVERED CALL OPPORTUNITIES (High ATR ≥5%)</div>"
+                html += "<div class='section-blue'>📞 COVERED CALL OPPORTUNITIES</div>"
                 html += "<table><tr><th class='th-blue'>Ticker</th><th class='th-blue'>Value</th><th class='th-blue'>Zone</th><th class='th-blue'>Price</th><th class='th-blue'>Exp</th><th class='th-blue'>Strike</th><th class='th-blue'>Upside</th><th class='th-blue'>Ann.Yield</th><th class='th-blue'>Trade</th></tr>"
                 
                 for r in cc_candidates[:15]:
@@ -476,12 +487,12 @@ class PortfolioReport:
                         html += f"<tr><td><strong>{r['ticker']}</strong></td><td>{self.format_value(r['position_value'])}</td><td style='color:{self.get_zone_color(zone)};'>{self.get_zone_emoji(zone)}</td><td>${r['price']:.2f}</td><td colspan='5' style='color:#999;'>No options</td></tr>"
                 html += "</table>"
         
-        # COVERED CALLS FOR FRIENDS MODE - high ATR stocks only (>=5%)
+        # COVERED CALLS FOR FRIENDS MODE
         if self.is_friends_mode:
-            cc_candidates = [r for r in self.all_results if r.get('psar_zone') in ['NEUTRAL', 'WEAK', 'SELL'] and abs(r.get('atr_pct', 0)) >= 5]
+            cc_candidates = [r for r in self.all_results if r.get('psar_zone') in ['NEUTRAL', 'WEAK', 'SELL']]
             if cc_candidates:
-                html += "<div class='section-blue'>📞 POTENTIAL COVERED CALL OPPORTUNITIES (High ATR ≥5%)</div>"
-                html += "<p style='font-size:11px;color:#666;margin:5px 0;'>High volatility stocks in NEUTRAL/WEAK/SELL zones - consider writing covered calls to generate income</p>"
+                html += "<div class='section-blue'>📞 POTENTIAL COVERED CALL OPPORTUNITIES</div>"
+                html += "<p style='font-size:11px;color:#666;margin:5px 0;'>Stocks in NEUTRAL/WEAK/SELL zones - consider writing covered calls to generate income while waiting</p>"
                 html += "<table><tr><th class='th-blue'>Ticker</th><th class='th-blue'>Zone</th><th class='th-blue'>Price</th><th class='th-blue'>PSAR%</th><th class='th-blue'>Exp</th><th class='th-blue'>Strike</th><th class='th-blue'>Upside</th><th class='th-blue'>Ann.Yield</th><th class='th-blue'>Trade</th></tr>"
                 
                 for r in cc_candidates[:20]:
@@ -497,90 +508,27 @@ class PortfolioReport:
         # ALL POSITIONS BY ZONE
         html += "<div class='section-gray'>📋 ALL POSITIONS BY ZONE</div>"
         
-        # EXPERIMENT MODE: Show both V1 and V2 side by side
-        if self.experiment_mode:
-            html += "<div style='background:#f0f8ff;padding:10px;margin:10px 0;border:2px solid #3498db;'>"
-            html += "<h3 style='color:#3498db;'>🔬 EXPERIMENT: V1 vs V2 Comparison</h3>"
-            html += "<p style='font-size:11px;color:#666;'>V1 uses Momentum/IR sorting. V2 uses Days/Confirmation sorting.</p>"
-            
-            for zone_key, zone_class, zone_list, zone_title in [
-                ('STRONG_BUY', 'strongbuy', self.strong_buys, '🟢🟢 STRONG BUY'),
-                ('BUY', 'buy', self.buys, '🟢 BUY'),
-                ('NEUTRAL', 'neutral', self.neutrals, '🟡 NEUTRAL'),
-                ('WEAK', 'weak', self.weak, '🟠 WEAK'),
-                ('SELL', 'sell', self.sells, '🔴 SELL'),
-            ]:
-                if zone_list:
-                    html += f"<h4 style='color:{self.get_zone_color(zone_key)};'>{zone_title} ({len(zone_list)})</h4>"
-                    html += "<div style='display:flex;gap:20px;'>"
-                    
-                    # V1 Table
-                    html += "<div style='flex:1;'><strong>V1 (Mom/IR)</strong>"
-                    v1_sorted = sorted(zone_list, key=lambda x: (-x.get('psar_momentum', 0), -x.get('signal_weight', 0)))
-                    if self.is_friends_mode:
-                        html += self._build_zone_table_v1_no_value(v1_sorted, zone_class)
-                    else:
-                        html += self._build_zone_table_v1(v1_sorted, zone_class)
-                    html += "</div>"
-                    
-                    # V2 Table
-                    html += "<div style='flex:1;'><strong>V2 (Days/Confirmation)</strong>"
-                    v2_sorted = sorted(zone_list, key=self._confirmation_sort_key)
-                    if self.is_friends_mode:
-                        html += self._build_zone_table_v2_no_value(v2_sorted, zone_class)
-                    else:
-                        html += self._build_zone_table_v2(v2_sorted, zone_class)
-                    html += "</div>"
-                    
-                    html += "</div>"
-                    
-                    # Highlight differences
-                    v1_order = [r['ticker'] for r in v1_sorted]
-                    v2_order = [r['ticker'] for r in v2_sorted]
-                    if v1_order != v2_order:
-                        moved = []
-                        for i, ticker in enumerate(v1_order):
-                            v2_pos = v2_order.index(ticker)
-                            if abs(i - v2_pos) >= 2:  # Moved 2+ positions
-                                direction = "↑" if v2_pos < i else "↓"
-                                moved.append(f"{ticker} {direction}{abs(i-v2_pos)}")
-                        if moved:
-                            html += f"<p style='font-size:10px;color:#e67e22;'>⚠️ Position changes: {', '.join(moved[:5])}</p>"
-            
-            html += "</div>"
-        else:
-            # Normal display (single mode)
-            for zone_key, zone_class, zone_list, zone_title in [
-                ('STRONG_BUY', 'strongbuy', self.strong_buys, '🟢🟢 STRONG BUY'),
-                ('BUY', 'buy', self.buys, '🟢 BUY'),
-                ('NEUTRAL', 'neutral', self.neutrals, '🟡 NEUTRAL'),
-                ('WEAK', 'weak', self.weak, '🟠 WEAK'),
-                ('SELL', 'sell', self.sells, '🔴 SELL'),
-            ]:
-                if zone_list:
-                    html += f"<h4 style='color:{self.get_zone_color(zone_key)};'>{zone_title} ({len(zone_list)})</h4>"
-                    if self.is_friends_mode:
-                        html += self._build_zone_table_no_value(zone_list, zone_class)
-                    else:
-                        html += self._build_zone_table(zone_list, zone_class)
+        for zone_key, zone_class, zone_list, zone_title in [
+            ('STRONG_BUY', 'strongbuy', self.strong_buys, '🟢🟢 STRONG BUY'),
+            ('BUY', 'buy', self.buys, '🟢 BUY'),
+            ('NEUTRAL', 'neutral', self.neutrals, '🟡 NEUTRAL'),
+            ('WEAK', 'weak', self.weak, '🟠 WEAK'),
+            ('SELL', 'sell', self.sells, '🔴 SELL'),
+        ]:
+            if zone_list:
+                html += f"<h4 style='color:{self.get_zone_color(zone_key)};'>{zone_title} ({len(zone_list)})</h4>"
+                if self.is_friends_mode:
+                    html += self._build_zone_table_no_value(zone_list, zone_class)
+                else:
+                    html += self._build_zone_table(zone_list, zone_class)
         
-        if self.display_mode == 'v2':
-            html += """<hr><p style='font-size:10px;color:#7f8c8d;'>
-            <strong>⭐ = IBD Stock</strong> (click star for IBD chart &amp; buy points)<br>
-            <strong>Days:</strong> Days since PSAR signal started (Day 1-3 = Fresh entry)<br>
-            <strong>ATR:</strong> 🔥=Overbought (price > EMA8+ATR) | ❄️=Oversold | % = distance from EMA8<br>
-            <strong>PRSI:</strong> PSAR on RSI. ↗️=RSI trending up | ↘️=RSI trending down<br>
-            <strong>OBV:</strong> 🟢=Volume confirms trend | 🔴=Divergence warning | 🟡=Neutral<br>
-            <strong>MACD/50MA:</strong> ✓=Bullish confirmation | -=Not confirmed
-            </p></body></html>"""
-        else:
-            html += """<hr><p style='font-size:10px;color:#7f8c8d;'>
-            <strong>⭐ = IBD Stock</strong> (click star for IBD chart &amp; buy points)<br>
-            <strong>Momentum (1-10):</strong> Trajectory since signal start. 8-10=Strong, 4-7=Neutral, 1-3=Weak<br>
-            <strong>ATR:</strong> 🔥=Overbought (price > EMA8+ATR, consider selling/covered calls) | ❄️=Oversold (good to buy) | —=Normal<br>
-            <strong>PRSI:</strong> PSAR on RSI. ↗️=RSI trending up | ↘️=RSI trending down<br>
-            <strong>IR:</strong> MACD(35)+Ultimate(15)+Williams(15)+Bollinger(15)+Coppock(20)=Max 100
-            </p></body></html>"""
+        html += """<hr><p style='font-size:10px;color:#7f8c8d;'>
+        <strong>⭐ = IBD Stock</strong> (click star for IBD chart &amp; buy points)<br>
+        <strong>Momentum (1-10):</strong> Trajectory since signal start. 8-10=Strong, 4-7=Neutral, 1-3=Weak<br>
+        <strong>ATR:</strong> 🔥=Overbought (price > EMA8+ATR, consider selling/covered calls) | ❄️=Oversold (good to buy) | —=Normal<br>
+        <strong>PRSI:</strong> PSAR on RSI. ↗️=RSI trending up | ↘️=RSI trending down<br>
+        <strong>IR:</strong> MACD(35)+Ultimate(15)+Williams(15)+Bollinger(15)+Coppock(20)=Max 100
+        </p></body></html>"""
         
         return html
     
@@ -612,20 +560,8 @@ class PortfolioReport:
             html += f"<tr><td><strong>{ticker_display}</strong></td><td><strong>{self.format_value(r['position_value'])}</strong></td><td>${r['price']:.2f}</td><td style='color:{zone_color};font-weight:bold;'>{r['psar_distance']:+.1f}%</td><td>{self.get_momentum_display(r.get('psar_momentum', 5))}</td><td>{atr_html}</td><td>{prsi_html}</td><td>{obv_html}</td><td>{r['signal_weight']}</td><td style='font-size:10px;'>{self.get_indicator_symbols(r)}</td></tr>"
         return html + "</table>"
     
-    def _build_zone_table_no_value(self, stocks, zone_class):
-        """Table without Value column for friends mode"""
-        if self.display_mode == 'v2':
-            return self._build_zone_table_v2_no_value(stocks, zone_class)
-        return self._build_zone_table_v1_no_value(stocks, zone_class)
-    
     def _build_zone_table(self, stocks, zone_class):
         """Table with Value column for mystocks mode"""
-        if self.display_mode == 'v2':
-            return self._build_zone_table_v2(stocks, zone_class)
-        return self._build_zone_table_v1(stocks, zone_class)
-    
-    def _build_zone_table_v1(self, stocks, zone_class):
-        """V1 Table: Value | Price | PSAR% | Mom | ATR | PRSI | OBV | IR"""
         html = f"<table><tr><th class='th-{zone_class}'>Ticker</th><th class='th-{zone_class}'>Value</th><th class='th-{zone_class}'>Price</th><th class='th-{zone_class}'>PSAR%</th><th class='th-{zone_class}'>Mom</th><th class='th-{zone_class}'>ATR</th><th class='th-{zone_class}'>PRSI</th><th class='th-{zone_class}'>OBV</th><th class='th-{zone_class}'>IR</th></tr>"
         for r in stocks:
             zone_color = self.get_zone_color(r.get('psar_zone', 'UNKNOWN'))
@@ -637,8 +573,8 @@ class PortfolioReport:
             html += f"<tr><td><strong>{ticker_display}</strong></td><td>{val_str}</td><td>${r['price']:.2f}</td><td style='color:{zone_color};'>{r['psar_distance']:+.1f}%</td><td>{self.get_momentum_display(r.get('psar_momentum', 5))}</td><td>{atr_html}</td><td>{prsi_html}</td><td>{obv_html}</td><td>{r['signal_weight']}</td></tr>"
         return html + "</table>"
     
-    def _build_zone_table_v1_no_value(self, stocks, zone_class):
-        """V1 Table without Value: Price | PSAR% | Mom | ATR | PRSI | OBV | IR"""
+    def _build_zone_table_no_value(self, stocks, zone_class):
+        """Table without Value column for friends mode"""
         html = f"<table><tr><th class='th-{zone_class}'>Ticker</th><th class='th-{zone_class}'>Price</th><th class='th-{zone_class}'>PSAR%</th><th class='th-{zone_class}'>Mom</th><th class='th-{zone_class}'>ATR</th><th class='th-{zone_class}'>PRSI</th><th class='th-{zone_class}'>OBV</th><th class='th-{zone_class}'>IR</th></tr>"
         for r in stocks:
             zone_color = self.get_zone_color(r.get('psar_zone', 'UNKNOWN'))
@@ -647,37 +583,6 @@ class PortfolioReport:
             prsi_html = self.get_prsi_display(r)
             ticker_display = self.get_ibd_ticker_display(r)
             html += f"<tr><td><strong>{ticker_display}</strong></td><td>${r['price']:.2f}</td><td style='color:{zone_color};'>{r['psar_distance']:+.1f}%</td><td>{self.get_momentum_display(r.get('psar_momentum', 5))}</td><td>{atr_html}</td><td>{prsi_html}</td><td>{obv_html}</td><td>{r['signal_weight']}</td></tr>"
-        return html + "</table>"
-    
-    def _build_zone_table_v2(self, stocks, zone_class):
-        """V2 Table: Value | Price | PSAR% | Days | ATR | PRSI | OBV | MACD | 50MA"""
-        html = f"<table><tr><th class='th-{zone_class}'>Ticker</th><th class='th-{zone_class}'>Value</th><th class='th-{zone_class}'>Price</th><th class='th-{zone_class}'>PSAR%</th><th class='th-{zone_class}'>Days</th><th class='th-{zone_class}'>ATR</th><th class='th-{zone_class}'>PRSI</th><th class='th-{zone_class}'>OBV</th><th class='th-{zone_class}'>MACD</th><th class='th-{zone_class}'>50MA</th></tr>"
-        for r in stocks:
-            zone_color = self.get_zone_color(r.get('psar_zone', 'UNKNOWN'))
-            val_str = self.format_value(r.get('position_value', 0))
-            obv_html = self.get_obv_display(r.get('obv_status', 'NEUTRAL'))
-            atr_html = self.get_atr_display(r)
-            prsi_html = self.get_prsi_display(r)
-            ticker_display = self.get_ibd_ticker_display(r)
-            days = r.get('days_since_signal', '?')
-            macd_html = "<span style='color:#27ae60;'>✓</span>" if r.get('has_macd') else "<span style='color:#ccc;'>-</span>"
-            ma50_html = "<span style='color:#27ae60;'>✓</span>" if r.get('above_ma50') else "<span style='color:#ccc;'>-</span>"
-            html += f"<tr><td><strong>{ticker_display}</strong></td><td>{val_str}</td><td>${r['price']:.2f}</td><td style='color:{zone_color};'>{r['psar_distance']:+.1f}%</td><td>{days}</td><td>{atr_html}</td><td>{prsi_html}</td><td>{obv_html}</td><td>{macd_html}</td><td>{ma50_html}</td></tr>"
-        return html + "</table>"
-    
-    def _build_zone_table_v2_no_value(self, stocks, zone_class):
-        """V2 Table without Value: Price | PSAR% | Days | ATR | PRSI | OBV | MACD | 50MA"""
-        html = f"<table><tr><th class='th-{zone_class}'>Ticker</th><th class='th-{zone_class}'>Price</th><th class='th-{zone_class}'>PSAR%</th><th class='th-{zone_class}'>Days</th><th class='th-{zone_class}'>ATR</th><th class='th-{zone_class}'>PRSI</th><th class='th-{zone_class}'>OBV</th><th class='th-{zone_class}'>MACD</th><th class='th-{zone_class}'>50MA</th></tr>"
-        for r in stocks:
-            zone_color = self.get_zone_color(r.get('psar_zone', 'UNKNOWN'))
-            obv_html = self.get_obv_display(r.get('obv_status', 'NEUTRAL'))
-            atr_html = self.get_atr_display(r)
-            prsi_html = self.get_prsi_display(r)
-            ticker_display = self.get_ibd_ticker_display(r)
-            days = r.get('days_since_signal', '?')
-            macd_html = "<span style='color:#27ae60;'>✓</span>" if r.get('has_macd') else "<span style='color:#ccc;'>-</span>"
-            ma50_html = "<span style='color:#27ae60;'>✓</span>" if r.get('above_ma50') else "<span style='color:#ccc;'>-</span>"
-            html += f"<tr><td><strong>{ticker_display}</strong></td><td>${r['price']:.2f}</td><td style='color:{zone_color};'>{r['psar_distance']:+.1f}%</td><td>{days}</td><td>{atr_html}</td><td>{prsi_html}</td><td>{obv_html}</td><td>{macd_html}</td><td>{ma50_html}</td></tr>"
         return html + "</table>"
     
     def send_email(self, additional_email=None, custom_title=None):
