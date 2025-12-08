@@ -11,7 +11,7 @@ from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
 
 # Import the fixed Cboe script
-from cboe import get_cboe_ratios_and_analyze 
+from data.cboe import get_cboe_ratios_and_analyze 
 
 EXIT_HISTORY_FILE = 'exit_history.json'
 
