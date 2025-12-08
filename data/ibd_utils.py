@@ -51,20 +51,20 @@ def load_ibd_data():
     all_ibd_tickers = []
     
     for filename in IBD_FILES:
-        if os.path.exists(filename):
+        if os.path.exists(f"data_files/{filename}"):
             try:
                 # IBD files are Excel files with header rows before data
                 df = None
                 
                 # Try Excel with xlrd engine (for .xls files), no header first
                 try:
-                    df = pd.read_excel(filename, engine='xlrd', header=None)
+                    df = pd.read_excel(f"data_files/{filename}", engine='xlrd', header=None)
                 except:
                     try:
-                        df = pd.read_excel(filename, header=None)
+                        df = pd.read_excel(f"data_files/{filename}", header=None)
                     except:
                         try:
-                            df = pd.read_csv(filename, header=None)
+                            df = pd.read_csv(f"data_files/{filename}", header=None)
                         except:
                             pass
                 
@@ -86,12 +86,12 @@ def load_ibd_data():
                 
                 # Re-read with correct header
                 try:
-                    df = pd.read_excel(filename, engine='xlrd', header=header_row)
+                    df = pd.read_excel(f"data_files/{filename}", engine='xlrd', header=header_row)
                 except:
                     try:
-                        df = pd.read_excel(filename, header=header_row)
+                        df = pd.read_excel(f"data_files/{filename}", header=header_row)
                     except:
-                        df = pd.read_csv(filename, header=header_row)
+                        df = pd.read_csv(f"data_files/{filename}", header=header_row)
                 
                 # Get symbols from first column
                 symbol_col = df.columns[0]
