@@ -99,18 +99,40 @@ class PortfolioReport:
         self.save_exit_history()
         return sorted(recent_exits, key=lambda x: x['exit_date'], reverse=True)
     
+    def _confirmation_sort_key(self, x):
+        """Sort key for buy zones: freshest signals with best confirmation first"""
+        return (
+            x.get('days_since_signal', 99),              # 1. Day 1 first, Day 2 second, etc.
+            -(x.get('obv_status') == 'CONFIRM'),         # 2. OBV confirms trend
+            -x.get('prsi_bullish', False),               # 3. PRSI bullish
+            -x.get('has_macd', False),                   # 4. MACD bullish
+            -x.get('above_ma50', False),                 # 5. Above 50MA
+            -x.get('position_value', 0)                  # 6. Larger positions (tiebreaker)
+        )
+    
+    def _sell_sort_key(self, x):
+        """Sort key for sell zones: worst signals first"""
+        return (
+            x.get('days_since_signal', 99),              # 1. Fresh sells first
+            (x.get('obv_status') == 'CONFIRM'),          # 2. OBV confirms downtrend (bad)
+            x.get('prsi_bullish', False),                # 3. PRSI bearish = worse
+            x.get('has_macd', False),                    # 4. MACD bearish = worse
+            -x.get('position_value', 0)                  # 5. Larger positions first
+        )
+    
     def group_by_zones(self):
-        # Sort by momentum first, then position value
+        # Buy zones: sort by confirmation strength (freshest + most confirmed first)
         self.strong_buys = sorted([r for r in self.all_results if r.get('psar_zone') == 'STRONG_BUY'], 
-                                   key=lambda x: (-x.get('psar_momentum', 0), -x['position_value']))
+                                   key=self._confirmation_sort_key)
         self.buys = sorted([r for r in self.all_results if r.get('psar_zone') == 'BUY'], 
-                           key=lambda x: (-x.get('psar_momentum', 0), -x['position_value']))
+                           key=self._confirmation_sort_key)
         self.neutrals = sorted([r for r in self.all_results if r.get('psar_zone') == 'NEUTRAL'], 
-                               key=lambda x: (-x.get('psar_momentum', 0), -x['position_value']))
+                               key=self._confirmation_sort_key)
+        # Sell zones: sort by severity
         self.weak = sorted([r for r in self.all_results if r.get('psar_zone') == 'WEAK'], 
-                           key=lambda x: (-x.get('psar_momentum', 0), -x['position_value']))
+                           key=self._sell_sort_key)
         self.sells = sorted([r for r in self.all_results if r.get('psar_zone') == 'SELL'], 
-                            key=lambda x: (-x.get('psar_momentum', 0), -x['position_value']))
+                            key=self._sell_sort_key)
     
     def get_zone_color(self, zone):
         return {'STRONG_BUY': '#1e8449', 'BUY': '#27ae60', 'NEUTRAL': '#f39c12', 
@@ -244,6 +266,25 @@ class PortfolioReport:
             }
         except:
             return None
+    
+    def build_covered_call_trade_link(self, ticker, cc):
+        """Build OptionStrat and Fidelity links for covered call"""
+        try:
+            exp_date = cc['expiration']  # e.g., "2025-12-19"
+            exp_yymmdd = exp_date[2:4] + exp_date[5:7] + exp_date[8:10]  # "251219"
+            exp_mmddyyyy = f"{exp_date[5:7]}/{exp_date[8:10]}/{exp_date[0:4]}"  # "12/19/2025"
+            strike_int = int(cc['strike'])
+            
+            # OptionStrat: https://optionstrat.com/build/covered-call/MRK/MRKx100,-.MRK251219C110
+            optionstrat_url = f"https://optionstrat.com/build/covered-call/{ticker}/{ticker}x100,-.{ticker}{exp_yymmdd}C{strike_int}"
+            
+            # Fidelity: Sell call
+            fid_base = "https://researchtools.fidelity.com/ftgw/mloptions/goto/plCalculator"
+            fid_sellc = f"{fid_base}?ulSymbol={ticker}&ulSecurity=E&ulAction=I&ulQuantity=0&strategy=SL&optSymbol1=-{ticker}{exp_yymmdd}C{strike_int}&optSecurity1=O&optAction1=S&optExp1={exp_mmddyyyy}&optStrike1={strike_int}&optType1=C&optQuantity1=1"
+            
+            return f'<a href="{optionstrat_url}" target="_blank" style="color:#007bff;">📊 Trade</a><br><a href="{fid_sellc}" target="_blank" style="font-size:10px;">F-SellC</a>'
+        except:
+            return "-"
     
     def build_email_body(self):
         html = """
@@ -410,15 +451,16 @@ class PortfolioReport:
             cc_candidates = [r for r in concentrated if r.get('psar_zone') in ['NEUTRAL', 'WEAK', 'SELL']] if concentrated else []
             if cc_candidates:
                 html += "<div class='section-blue'>📞 COVERED CALL OPPORTUNITIES</div>"
-                html += "<table><tr><th class='th-blue'>Ticker</th><th class='th-blue'>Value</th><th class='th-blue'>Zone</th><th class='th-blue'>Price</th><th class='th-blue'>Exp</th><th class='th-blue'>Strike</th><th class='th-blue'>Upside</th><th class='th-blue'>Ann.Yield</th></tr>"
+                html += "<table><tr><th class='th-blue'>Ticker</th><th class='th-blue'>Value</th><th class='th-blue'>Zone</th><th class='th-blue'>Price</th><th class='th-blue'>Exp</th><th class='th-blue'>Strike</th><th class='th-blue'>Upside</th><th class='th-blue'>Ann.Yield</th><th class='th-blue'>Trade</th></tr>"
                 
                 for r in cc_candidates[:15]:
                     cc = self.get_covered_call_recommendation(r['ticker'], r['price'])
                     zone = r.get('psar_zone', 'UNKNOWN')
                     if cc:
-                        html += f"<tr><td><strong>{r['ticker']}</strong></td><td>{self.format_value(r['position_value'])}</td><td style='color:{self.get_zone_color(zone)};'>{self.get_zone_emoji(zone)}</td><td>${r['price']:.2f}</td><td>{cc['expiration']} ({cc['dte']}d)</td><td>${cc['strike']:.2f}</td><td>+{cc['upside_to_strike']:.1f}%</td><td><strong>{cc['annualized_yield']:.0f}%</strong></td></tr>"
+                        trade_link = self.build_covered_call_trade_link(r['ticker'], cc)
+                        html += f"<tr><td><strong>{r['ticker']}</strong></td><td>{self.format_value(r['position_value'])}</td><td style='color:{self.get_zone_color(zone)};'>{self.get_zone_emoji(zone)}</td><td>${r['price']:.2f}</td><td>{cc['expiration']} ({cc['dte']}d)</td><td>${cc['strike']:.2f}</td><td>+{cc['upside_to_strike']:.1f}%</td><td><strong>{cc['annualized_yield']:.0f}%</strong></td><td>{trade_link}</td></tr>"
                     else:
-                        html += f"<tr><td><strong>{r['ticker']}</strong></td><td>{self.format_value(r['position_value'])}</td><td style='color:{self.get_zone_color(zone)};'>{self.get_zone_emoji(zone)}</td><td>${r['price']:.2f}</td><td colspan='4' style='color:#999;'>No options</td></tr>"
+                        html += f"<tr><td><strong>{r['ticker']}</strong></td><td>{self.format_value(r['position_value'])}</td><td style='color:{self.get_zone_color(zone)};'>{self.get_zone_emoji(zone)}</td><td>${r['price']:.2f}</td><td colspan='5' style='color:#999;'>No options</td></tr>"
                 html += "</table>"
         
         # COVERED CALLS FOR FRIENDS MODE
@@ -427,15 +469,16 @@ class PortfolioReport:
             if cc_candidates:
                 html += "<div class='section-blue'>📞 POTENTIAL COVERED CALL OPPORTUNITIES</div>"
                 html += "<p style='font-size:11px;color:#666;margin:5px 0;'>Stocks in NEUTRAL/WEAK/SELL zones - consider writing covered calls to generate income while waiting</p>"
-                html += "<table><tr><th class='th-blue'>Ticker</th><th class='th-blue'>Zone</th><th class='th-blue'>Price</th><th class='th-blue'>PSAR%</th><th class='th-blue'>Exp</th><th class='th-blue'>Strike</th><th class='th-blue'>Upside</th><th class='th-blue'>Ann.Yield</th></tr>"
+                html += "<table><tr><th class='th-blue'>Ticker</th><th class='th-blue'>Zone</th><th class='th-blue'>Price</th><th class='th-blue'>PSAR%</th><th class='th-blue'>Exp</th><th class='th-blue'>Strike</th><th class='th-blue'>Upside</th><th class='th-blue'>Ann.Yield</th><th class='th-blue'>Trade</th></tr>"
                 
                 for r in cc_candidates[:20]:
                     cc = self.get_covered_call_recommendation(r['ticker'], r['price'])
                     zone = r.get('psar_zone', 'UNKNOWN')
                     if cc:
-                        html += f"<tr><td><strong>{r['ticker']}</strong></td><td style='color:{self.get_zone_color(zone)};'>{self.get_zone_emoji(zone)}</td><td>${r['price']:.2f}</td><td>{r['psar_distance']:+.1f}%</td><td>{cc['expiration']} ({cc['dte']}d)</td><td>${cc['strike']:.2f}</td><td>+{cc['upside_to_strike']:.1f}%</td><td><strong>{cc['annualized_yield']:.0f}%</strong></td></tr>"
+                        trade_link = self.build_covered_call_trade_link(r['ticker'], cc)
+                        html += f"<tr><td><strong>{r['ticker']}</strong></td><td style='color:{self.get_zone_color(zone)};'>{self.get_zone_emoji(zone)}</td><td>${r['price']:.2f}</td><td>{r['psar_distance']:+.1f}%</td><td>{cc['expiration']} ({cc['dte']}d)</td><td>${cc['strike']:.2f}</td><td>+{cc['upside_to_strike']:.1f}%</td><td><strong>{cc['annualized_yield']:.0f}%</strong></td><td>{trade_link}</td></tr>"
                     else:
-                        html += f"<tr><td><strong>{r['ticker']}</strong></td><td style='color:{self.get_zone_color(zone)};'>{self.get_zone_emoji(zone)}</td><td>${r['price']:.2f}</td><td>{r['psar_distance']:+.1f}%</td><td colspan='4' style='color:#999;'>No options available</td></tr>"
+                        html += f"<tr><td><strong>{r['ticker']}</strong></td><td style='color:{self.get_zone_color(zone)};'>{self.get_zone_emoji(zone)}</td><td>${r['price']:.2f}</td><td>{r['psar_distance']:+.1f}%</td><td colspan='5' style='color:#999;'>No options available</td></tr>"
                 html += "</table>"
         
         # ALL POSITIONS BY ZONE

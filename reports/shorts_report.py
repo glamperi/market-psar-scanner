@@ -164,6 +164,7 @@ class ShortsReport:
             # ==========================================
             short_target = current_price * 0.75  # 25% below
             short_min = current_price * 0.65     # Don't go below 35% OTM
+            min_ask = current_price * 0.0005     # Minimum ask = 0.05% of stock price
             
             otm_puts = puts_sorted[(puts_sorted['strike'] < current_price * 0.90) & 
                                    (puts_sorted['strike'] >= short_min)]
@@ -172,7 +173,8 @@ class ShortsReport:
                 # Find put closest to 25% below with decent bid
                 otm_puts = otm_puts.copy()
                 otm_puts['dist_to_target'] = abs(otm_puts['strike'] - short_target)
-                otm_with_bid = otm_puts[otm_puts['bid'] > 0]
+                # Filter: bid > 0 AND ask >= minimum threshold (0.05% of stock price)
+                otm_with_bid = otm_puts[(otm_puts['bid'] > 0) & (otm_puts['ask'] >= min_ask)]
                 
                 if not otm_with_bid.empty:
                     short_put = otm_with_bid.loc[otm_with_bid['dist_to_target'].idxmin()]
@@ -573,6 +575,7 @@ class ShortsReport:
                 <th>Spread</th>
                 <th>Net Cost</th>
                 <th>Max Profit</th>
+                <th>Trade</th>
             </tr>
         """
         
@@ -612,11 +615,49 @@ class ShortsReport:
                     spread_width = f"${put['spread_width']:.0f}"
                     net_cost = f"${put['spread_cost']:.2f}"
                     max_profit = f"${put['max_profit']:.2f}"
+                    
+                    # Build trade links
+                    try:
+                        exp_date = put['expiration']  # e.g., "2025-12-19"
+                        exp_yymmdd = exp_date[2:4] + exp_date[5:7] + exp_date[8:10]  # "251219"
+                        exp_mmddyyyy = f"{exp_date[5:7]}/{exp_date[8:10]}/{exp_date[0:4]}"  # "12/19/2025"
+                        long_strike_int = int(put['long_strike'])
+                        short_strike_int = int(put['short_strike'])
+                        ticker = r['ticker']
+                        
+                        # OptionStrat URL for bear put spread
+                        optionstrat_url = f"https://optionstrat.com/build/bear-put-spread/{ticker}/-{exp_yymmdd}P{short_strike_int},{exp_yymmdd}P{long_strike_int}"
+                        
+                        # Fidelity URLs for individual legs
+                        fid_base = "https://researchtools.fidelity.com/ftgw/mloptions/goto/plCalculator"
+                        fid_buyp = f"{fid_base}?ulSymbol={ticker}&ulSecurity=E&ulAction=I&ulQuantity=0&strategy=SL&optSymbol1={ticker}{exp_yymmdd}P{long_strike_int}&optSecurity1=O&optAction1=B&optExp1={exp_mmddyyyy}&optStrike1={long_strike_int}&optType1=P&optQuantity1=1"
+                        fid_sellp = f"{fid_base}?ulSymbol={ticker}&ulSecurity=E&ulAction=I&ulQuantity=0&strategy=SL&optSymbol1=-{ticker}{exp_yymmdd}P{short_strike_int}&optSecurity1=O&optAction1=S&optExp1={exp_mmddyyyy}&optStrike1={short_strike_int}&optType1=P&optQuantity1=1"
+                        
+                        trade_link = f'<a href="{optionstrat_url}" target="_blank" style="color:#007bff;">📊 Trade</a><br><a href="{fid_buyp}" target="_blank" style="font-size:10px;">F-BuyP</a> | <a href="{fid_sellp}" target="_blank" style="font-size:10px;">F-SellP</a>'
+                    except:
+                        trade_link = "-"
                 else:
                     sell_strike = "-"
                     spread_width = "-"
                     net_cost = cost
                     max_profit = "unlimited"
+                    
+                    # Single leg - just buy put
+                    try:
+                        exp_date = put['expiration']
+                        exp_yymmdd = exp_date[2:4] + exp_date[5:7] + exp_date[8:10]
+                        exp_mmddyyyy = f"{exp_date[5:7]}/{exp_date[8:10]}/{exp_date[0:4]}"
+                        long_strike_int = int(put['long_strike'])
+                        ticker = r['ticker']
+                        
+                        optionstrat_url = f"https://optionstrat.com/build/long-put/{ticker}/{exp_yymmdd}P{long_strike_int}"
+                        
+                        fid_base = "https://researchtools.fidelity.com/ftgw/mloptions/goto/plCalculator"
+                        fid_buyp = f"{fid_base}?ulSymbol={ticker}&ulSecurity=E&ulAction=I&ulQuantity=0&strategy=SL&optSymbol1={ticker}{exp_yymmdd}P{long_strike_int}&optSecurity1=O&optAction1=B&optExp1={exp_mmddyyyy}&optStrike1={long_strike_int}&optType1=P&optQuantity1=1"
+                        
+                        trade_link = f'<a href="{optionstrat_url}" target="_blank" style="color:#007bff;">📊 Trade</a><br><a href="{fid_buyp}" target="_blank" style="font-size:10px;">F-BuyP</a>'
+                    except:
+                        trade_link = "-"
                 
                 html += f"""
                 <tr>
@@ -632,6 +673,7 @@ class ShortsReport:
                     <td>{spread_width}</td>
                     <td><b>{net_cost}</b></td>
                     <td>{max_profit}</td>
+                    <td>{trade_link}</td>
                 </tr>
                 """
             else:
@@ -640,7 +682,7 @@ class ShortsReport:
                     <td><b>{r['ticker']}</b></td>
                     <td>${r['price']:.2f}</td>
                     <td>{score}</td>
-                    <td colspan="9" style="color:#999;">No options available</td>
+                    <td colspan="10" style="color:#999;">No options available</td>
                 </tr>
                 """
         
@@ -651,7 +693,9 @@ class ShortsReport:
         <p style="font-size:10px;color:#666;margin-top:10px;">
         <b>Legend:</b> ITM% 🟢 30%+ (delta ~0.97) | 🟡 20-30% | 🔴 <20% (low delta) | 
         Extr% 🟢 <5% ideal | 🟡 5-10% | 🔴 >10% (too much premium) |
-        Sell Put = ~25% below price for cushion
+        Sell Put = ~25% below price for cushion |
+        📊 Trade = opens in OptionStrat for P&amp;L analysis |
+        F-BuyP/F-SellP = Fidelity P&amp;L calculator for individual legs
         </p>
         """
         
@@ -659,7 +703,7 @@ class ShortsReport:
     
     def generate_tracking_sheet(self, output_dir=None):
         """Generate Google Sheets CSV for tracking shorts"""
-        from shorts_sheet import generate_shorts_sheet
+        from utils.shorts_sheet import generate_shorts_sheet
         
         # Ensure scores are calculated (in case this is called before build_email_body)
         for r in self.all_results:
