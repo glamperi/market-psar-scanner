@@ -1462,7 +1462,7 @@ if __name__ == "__main__":
         print("="*60)
         
         print("\nGenerating shorts report...")
-        from shorts_report import ShortsReport
+        from reports.shorts_report import ShortsReport
         report = ShortsReport(results)
         report.send_email(additional_email=args.email)
         
@@ -1489,7 +1489,7 @@ if __name__ == "__main__":
         print(f"\n📉 Found {len(sell_results)} stocks in SELL zones (potential short candidates)")
         
         print("\nGenerating market short scan report...")
-        from shorts_report import ShortsReport
+        from reports.shorts_report import ShortsReport
         mc_val = args.mc if args.mc is not None else 10
         report = ShortsReport(results, mc_filter=mc_val, include_adr=args.adr)
         report.send_email(additional_email=args.email)
