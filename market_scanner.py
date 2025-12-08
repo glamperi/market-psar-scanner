@@ -1071,7 +1071,7 @@ class MarketScanner:
         print(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print("="*70)
         
-        mystocks_file = 'mystocks.txt'
+        mystocks_file = 'data_files/mystocks.txt'
         mystocks = []
         seen = set()
         
@@ -1314,6 +1314,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='PSAR Market Scanner')
     parser.add_argument('-mystocks', action='store_true', help='Scan only mystocks.txt (your portfolio)')
     parser.add_argument('-friends', action='store_true', help='Scan only friends.txt (friend portfolio)')
+    parser.add_argument('-experiment', action='store_true', help='Show V1 vs V2 side-by-side comparison')
+    parser.add_argument('-classic', action='store_true', help='Use V1 display (Mom/IR instead of Days/MACD)')
     parser.add_argument('-shorts', action='store_true', help='Scan only shorts.txt (short candidates)')
     parser.add_argument('-shortscan', action='store_true', help='Full market scan for short candidates (uses -mc, -adr filters)')
     parser.add_argument('-t', '--title', type=str, default=None, help='Custom report title (used with -friends)')
@@ -1432,7 +1434,10 @@ if __name__ == "__main__":
         
         print("\nGenerating portfolio report...")
         from reports.portfolio_report import PortfolioReport
-        report = PortfolioReport(results, position_values)
+        #report = PortfolioReport(results, position_values)
+        report = PortfolioReport(results, position_values, 
+                         display_mode='v1' if args.classic else 'v2',
+                         experiment_mode=args.experiment)
         report.send_email(additional_email=args.email)
         
     elif args.friends:
@@ -1448,7 +1453,10 @@ if __name__ == "__main__":
         
         print("\nGenerating friends report...")
         from reports.portfolio_report import PortfolioReport
-        report = PortfolioReport(results, position_values={}, is_friends_mode=True)
+        #report = PortfolioReport(results, position_values={}, is_friends_mode=True)
+        report = PortfolioReport(results, position_values={}, is_friends_mode=True,
+                         display_mode='v1' if args.classic else 'v2',
+                         experiment_mode=args.experiment)
         
         # Use custom title if provided
         custom_title = args.title if args.title else "Friends Portfolio"
@@ -1509,7 +1517,7 @@ if __name__ == "__main__":
             results = apply_growth_filters(results, args.eps, args.rev)
         
         print("\nGenerating market report...")
-        from email_report import EmailReport
+        from reports.email_report import EmailReport
         mc_val = args.mc if args.mc is not None else 10
         report = EmailReport(results, eps_filter=args.eps, rev_filter=args.rev, mc_filter=mc_val)
         report.send_email(additional_email=args.email)

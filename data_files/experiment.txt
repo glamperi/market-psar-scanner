@@ -1,0 +1,43 @@
+# YOUR PRIORITY WATCH LIST
+# Add/remove tickers here - one per line
+
+# BIG TECH
+META
+GOOGL
+AAPL
+AMZN
+META
+NVDA
+TSLA
+BABA
+MELI
+
+# CRYPTO DIRECT
+BTC-USD
+ETH-USD
+SOL-USD
+SUI20947-USD
+
+# BITCOIN EQUITY PLAYS
+IBIT
+MSTR
+FBTC
+MTPLF
+NAKA
+TSWCF
+ASST
+SMLR
+
+# Recent Strong buys
+myrg
+gh
+ntgr
+ffiv
+avgo
+hca
+arqt
+snow
+idxx
+ltbr
+panw
+ftnt
