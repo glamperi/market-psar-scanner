@@ -1168,7 +1168,7 @@ class MarketScanner:
         print(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print("="*70)
         
-        friends_file = 'friends.txt'
+        friends_file = 'data_files/friends.txt'
         friends_stocks = []
         seen = set()
         
@@ -1240,7 +1240,7 @@ class MarketScanner:
         print(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print("="*70)
         
-        shorts_file = 'shorts.txt'
+        shorts_file = 'data_files/shorts.txt'
         short_stocks = []
         seen = set()
         
@@ -1431,7 +1431,7 @@ if __name__ == "__main__":
                 print(f"⚠️ Could not load mypositions.csv: {e}")
         
         print("\nGenerating portfolio report...")
-        from portfolio_report import PortfolioReport
+        from reports.portfolio_report import PortfolioReport
         report = PortfolioReport(results, position_values)
         report.send_email(additional_email=args.email)
         
@@ -1447,7 +1447,7 @@ if __name__ == "__main__":
             results = apply_growth_filters(results, args.eps, args.rev)
         
         print("\nGenerating friends report...")
-        from portfolio_report import PortfolioReport
+        from reports.portfolio_report import PortfolioReport
         report = PortfolioReport(results, position_values={}, is_friends_mode=True)
         
         # Use custom title if provided

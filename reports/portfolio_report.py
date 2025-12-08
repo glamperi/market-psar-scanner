@@ -321,7 +321,7 @@ class PortfolioReport:
         
         # MARKET SENTIMENT from CBOE (using Selenium)
         try:
-            from cboe import get_cboe_ratios_and_analyze
+            from data.cboe import get_cboe_ratios_and_analyze
             sentiment_text = get_cboe_ratios_and_analyze()
             
             if sentiment_text:
