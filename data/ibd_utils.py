@@ -8,19 +8,16 @@ and formatting IBD-related display elements.
 import os
 import pandas as pd
 
-# Get the directory where this module is located
-MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
-
 # Map IBD filenames to their list parameter for URLs
 IBD_LIST_MAP = {
     'ibd_50': 'ibd50',
     'ibd_bigcap20': 'bigcap20',
     'ibd_sector': 'sectorleaders',
     'ibd_ipo': 'ipo-leaders',
-    'ibd_spotlight': 'stock-spotlight'
+    'ibd_spotlight': 'stockspotlight'
 }
 
-# IBD files to load (will check both current dir and module dir)
+# IBD files to load
 IBD_FILES = [
     'ibd_50.csv',
     'ibd_bigcap20.csv',
@@ -50,50 +47,29 @@ def load_ibd_data():
             ...
         }
     """
-    print("Loading IBD data files...")
     ibd_stats = {}
     all_ibd_tickers = []
     
     for filename in IBD_FILES:
-        # Check multiple possible locations for IBD files
-        filepath = None
-        possible_paths = [
-            filename,                                           # Current directory
-            os.path.join(MODULE_DIR, filename),                # data/ folder (where ibd_utils.py is)
-            os.path.join(os.path.dirname(MODULE_DIR), filename),  # Parent of data/ (project root)
-            os.path.join('data_files', filename),              # data_files/ folder
-            os.path.join(os.path.dirname(MODULE_DIR), 'data_files', filename),  # project_root/data_files/
-        ]
-        
-        for path in possible_paths:
-            if os.path.exists(path):
-                filepath = path
-                print(f"  Found IBD file: {path}")
-                break
-        
-        if not filepath:
-            print(f"  ✗ IBD file not found: {filename} (checked {len(possible_paths)} locations)")
-            continue
-            
-        if filepath:
+        if os.path.exists(filename):
             try:
                 # IBD files are Excel files with header rows before data
                 df = None
                 
                 # Try Excel with xlrd engine (for .xls files), no header first
                 try:
-                    df = pd.read_excel(filepath, engine='xlrd', header=None)
+                    df = pd.read_excel(filename, engine='xlrd', header=None)
                 except:
                     try:
-                        df = pd.read_excel(filepath, header=None)
+                        df = pd.read_excel(filename, header=None)
                     except:
                         try:
-                            df = pd.read_csv(filepath, header=None)
+                            df = pd.read_csv(filename, header=None)
                         except:
                             pass
                 
                 if df is None or df.empty:
-                    print(f"  ✗ Could not read {filepath}")
+                    print(f"  ✗ Could not read {filename}")
                     continue
                 
                 # Find the header row (row where first cell is 'Symbol')
@@ -105,17 +81,17 @@ def load_ibd_data():
                         break
                 
                 if header_row is None:
-                    print(f"  ✗ Could not find header in {filepath}")
+                    print(f"  ✗ Could not find header in {filename}")
                     continue
                 
                 # Re-read with correct header
                 try:
-                    df = pd.read_excel(filepath, engine='xlrd', header=header_row)
+                    df = pd.read_excel(filename, engine='xlrd', header=header_row)
                 except:
                     try:
-                        df = pd.read_excel(filepath, header=header_row)
+                        df = pd.read_excel(filename, header=header_row)
                     except:
-                        df = pd.read_csv(filepath, header=header_row)
+                        df = pd.read_csv(filename, header=header_row)
                 
                 # Get symbols from first column
                 symbol_col = df.columns[0]
@@ -137,7 +113,7 @@ def load_ibd_data():
                     elif col_upper == 'SMR RATING' or col_upper == 'SMR':
                         smr_col = col
                 
-                # Get list name for URLs (use original filename for mapping)
+                # Get list name for URLs
                 list_name = IBD_LIST_MAP.get(filename.replace('.csv', ''), 'ibd50')
                 
                 # Extract tickers and stats
@@ -161,7 +137,7 @@ def load_ibd_data():
                             company_name = str(row[col]).strip() if pd.notna(row[col]) else None
                             break
                     
-                    # Store stats (use original filename for source display)
+                    # Store stats
                     ibd_stats[symbol] = {
                         'composite': row.get(composite_col, 'N/A') if composite_col else 'N/A',
                         'eps': row.get(eps_col, 'N/A') if eps_col else 'N/A',
@@ -172,7 +148,7 @@ def load_ibd_data():
                         'list': list_name
                     }
                 
-                print(f"  ✓ Loaded {count} tickers from {filepath}")
+                print(f"  ✓ Loaded {count} tickers from {filename}")
                 
             except Exception as e:
                 print(f"  ✗ Error loading {filename}: {e}")
@@ -208,8 +184,28 @@ def get_ibd_url(ticker, ibd_stats, exchange=None):
     if not company_name:
         return None
     
-    # Convert company name to URL format: "Micron Technology" -> "micron-technology"
+    # Clean company name for URL - remove common suffixes that IBD strips
     url_name = company_name.lower()
+    
+    # Remove common corporate suffixes (loop until no more found)
+    suffixes_to_remove = [
+        ' corp', ' corporation', ' inc', ' incorporated', ' ltd', ' limited',
+        ' co', ' company', ' holdings', ' group', ' plc', ' llc', ' lp',
+        ' cl a', ' cl b', ' cl c', ' class a', ' class b', ' class c',
+        ' series a', ' series b', ' common', ' ordinary', ' adr',
+        ' n.v.', ' s.a.', ' ag', ' se', ' nv', ' sa'
+    ]
+    changed = True
+    while changed:
+        changed = False
+        for suffix in suffixes_to_remove:
+            if url_name.endswith(suffix):
+                url_name = url_name[:-len(suffix)]
+                changed = True
+    
+    # Also remove these if they appear anywhere (not just at end)
+    url_name = url_name.replace(' & ', ' ')
+    
     url_name = ''.join(c if c.isalnum() or c == ' ' else '' for c in url_name)
     url_name = '-'.join(url_name.split())
     
