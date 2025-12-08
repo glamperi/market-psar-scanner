@@ -16,7 +16,7 @@ from ta.trend import CCIIndicator
 
 # Import IBD utilities
 try:
-    from ibd_utils import load_ibd_data, get_ibd_url, is_ibd_stock
+    from data.ibd_utils import load_ibd_data, get_ibd_url, is_ibd_stock
 except ImportError:
     # Fallback if ibd_utils not available
     load_ibd_data = None
