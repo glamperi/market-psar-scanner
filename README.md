@@ -4,6 +4,8 @@ A technical analysis scanner that uses PRSI (PSAR on RSI) as the primary signal 
 
 ## Quick Start
 
+**Use `main.py` for all scanning** (V2 format with Days/DMI/ADX/MACD):
+
 ```bash
 # Full market scan + email
 python main.py
@@ -25,10 +27,14 @@ python main.py --no-email
 
 # Save HTML report
 python main.py --html report.html
+
+# Quick single ticker lookup (market_scanner.py only)
+python market_scanner.py -lookup AAPL
 ```
 
 ## Command Line Options
 
+### main.py Options
 | Flag | Description | Example |
 |------|-------------|---------|
 | `-mystocks` | Scan your portfolio (mystocks.txt) | `python main.py -mystocks` |
@@ -48,6 +54,12 @@ python main.py --html report.html
 | `--email-to` | Additional email recipient | `--email-to user@email.com` |
 | `--classic` | Use V1 logic (Price PSAR primary) | `--classic` |
 
+### market_scanner.py Additional Options
+| Flag | Description | Example |
+|------|-------------|---------|
+| `-lookup TICKER` | Quick lookup single ticker (no email) | `python market_scanner.py -lookup AAPL` |
+| `-experiment` | Enable experimental features | `python market_scanner.py -mystocks -experiment` |
+
 ## Core Concept: PRSI Leads Price
 
 **PRSI (PSAR on RSI)** applies the Parabolic SAR indicator to RSI instead of price. This creates a leading indicator that typically flips 1-3 days before the price-based PSAR.
@@ -59,25 +71,15 @@ python main.py --html report.html
 
 ## Buy Categories
 
-Zone classification is based on **effective PSAR distance** (% from PSAR, adjusted by momentum):
+### 🟢🟢 Strong Buy (Fresh Signals)
+**Criteria:** PRSI bullish + Price crossed above PSAR within 5 days + ADX ≥ 15
 
-| Zone | Criteria |
-|------|----------|
-| 🟢🟢 STRONG_BUY | PSAR distance > +5% |
-| 🟢 BUY | PSAR distance ≥ +2% |
-| 🟡 NEUTRAL | PSAR distance ≥ -2% |
-| 🟠 WEAK | PSAR distance ≥ -5% |
-| 🔴 SELL | PSAR distance < -5% |
+These are your best opportunities - the trend just confirmed with a fresh PSAR cross.
 
-**Momentum adjustment:** 
-- Bearish stocks with strong momentum (≥7) get +2% boost (recovering)
-- Bullish stocks with weak momentum (≤3) get -1% penalty (fading)
+### 🟢 Buy (Established Trends)
+**Criteria:** PRSI bullish + Price above PSAR for >5 days
 
-### 🟢🟢 Strong Buy
-Price is >5% above PSAR - strong confirmed uptrend with cushion.
-
-### 🟢 Buy
-Price is 2-5% above PSAR - confirmed uptrend.
+Confirmed uptrends but not as fresh. Still good, just not as early.
 
 ### ⚡ Early Buy (Speculative)
 **Criteria:** PRSI bullish + Price still BELOW PSAR
@@ -89,34 +91,15 @@ PRSI says "go" but price hasn't confirmed by crossing PSAR yet. Higher risk/rewa
 
 Quality dividend stocks with bullish technicals.
 
-### 🟡 Neutral / ⏸️ Hold
-Price is within ±2% of PSAR - no clear direction. Wait for confirmation.
+### ⏸️ Hold (Portfolio mode only)
+**Criteria:** PRSI bearish + Price still above PSAR
 
-### 🟠 Weak
-Price is 2-5% below PSAR - downtrend starting but not severe.
+Pullback expected - don't add, but don't panic sell yet.
 
-### 🔴 Sell
-Price is >5% below PSAR - confirmed downtrend. Consider reducing position.
+### 🔴 Sell (Portfolio mode only)
+**Criteria:** PRSI bearish + Price below PSAR
 
-## Sorting Within Zones
-
-Within each zone, stocks are sorted by **confirmation strength** (not IR score):
-
-| Priority | Indicator | What it means |
-|----------|-----------|---------------|
-| 1 | Days since signal | Day 1 first, Day 2 second, etc. |
-| 2 | OBV CONFIRM | Volume confirms price direction |
-| 3 | PRSI bullish | RSI trend is up |
-| 4 | MACD bullish | MACD > Signal line |
-| 5 | Above 50MA | Price above 50-day moving average |
-
-**Why this order?**
-- Fresh signals (Day 1-2) are most actionable
-- OBV confirms institutional money flow
-- PRSI leads price by 1-3 days
-- MACD and 50MA provide additional confirmation
-
-> **Note:** The classic `-classic` mode uses IR scoring instead. See the IR Score section in Table Columns.
+Confirmed downtrend. Consider reducing position.
 
 ## Covered Calls 📞
 
@@ -129,9 +112,9 @@ High-ATR stocks (≥5%) get covered call suggestions with:
 
 Stocks with high ATR show a 📞 icon in the ATR column - click it to jump to the covered call recommendation.
 
-**Trade column** includes clickable links:
-- **📊 Trade** = Opens in OptionStrat with pre-filled covered call (100 shares + sell call) for P&L analysis
-- **F-SellC** = Fidelity P&L calculator for the sell call leg
+**Trade column** includes:
+- **📊 Trade** = Opens in [OptionStrat](https://optionstrat.com) for P&L analysis
+- **F-SellC** = Fidelity P&L calculator link for the sell call
 
 ## Short Scanning
 
@@ -157,12 +140,10 @@ For short candidates, suggests bear put spreads:
 - **Sell Put:** ~15% OTM (delta ~0.15)
 - **Expiration:** 2-4 weeks
 
-**Trade column** includes clickable links:
-- **📊 Trade** = Opens in OptionStrat with pre-filled bear put spread for P&L analysis
-- **F-BuyP** = Fidelity P&L calculator for the buy put leg
-- **F-SellP** = Fidelity P&L calculator for the sell put leg
-
-> **Note:** OptionStrat does not integrate with brokers for execution. Use it to visualize the trade, then enter manually at your broker.
+**Trade column** includes:
+- **📊 Trade** = Opens in [OptionStrat](https://optionstrat.com) for P&L analysis
+- **F-BuyP** = Fidelity link for buy put leg
+- **F-SellP** = Fidelity link for sell put leg
 
 ### Short Interest & Squeeze Risk
 - Shows short interest % when available
@@ -204,6 +185,7 @@ Each email shows the filters used:
 | Price | Current price |
 | PSAR% | Gap from PSAR (+ = above, - = below) |
 | Days | Days since PSAR cross (or PRSI flip for Early Buy) |
+| Mom | PSAR Momentum (1-10) - trend strength/trajectory |
 | PRSI | ↗️ Bullish or ↘️ Bearish |
 | OBV | 🟢 Accumulation, 🔴 Distribution, ⚪ Neutral |
 | DMI | ✓ if +DI > -DI (bulls in control) |
@@ -212,6 +194,16 @@ Each email shows the filters used:
 | ATR% | Average True Range % (📞 if ≥5% = covered call candidate) |
 | Will%R | Williams %R (-100 to 0, lower = more oversold) |
 | Yield | Dividend yield % |
+
+### Momentum Interpretation (V2)
+
+| Mom | Meaning | Action |
+|-----|---------|--------|
+| 1-3 | Weak/Capitulating | Avoid (or watch for bounce) |
+| 4 | Stabilizing | Watch for PRSI flip |
+| **5-7✨** | **Accelerating** | **Best entry zone** |
+| 8-9🔥 | Strong but late | Good if PRSI confirms |
+| 10⏸️ | Exhausted | HOLD only, no new entries |
 
 ## GitHub Actions
 
@@ -240,28 +232,19 @@ Manual triggers available with customizable:
 
 ## Data Files
 
-All data files are stored in the `data_files/` directory:
-
 | File | Purpose |
 |------|---------|
-| `data_files/mystocks.txt` | Your portfolio tickers (one per line) |
-| `data_files/friends.txt` | Friends watchlist tickers |
-| `data_files/shorts.txt` | Shorts watchlist tickers |
-| `data_files/custom_watchlist.txt` | Priority watchlist for market scans |
+| `mystocks.txt` | Your portfolio tickers (one per line) |
+| `friends.txt` | Friends watchlist tickers |
+| `shorts.txt` | Shorts watchlist tickers |
 | `data_files/short_interest.csv` | Manual short interest overrides |
-| `data_files/sp500_tickers.csv` | S&P 500 ticker list |
-| `data_files/nasdaq100_tickers.csv` | NASDAQ 100 ticker list |
-| `data_files/russell2000_tickers.csv` | Russell 2000 ticker list |
-| `data_files/ibd_*.csv` | IBD stock lists (50, BigCap20, Sector, IPO, Spotlight) |
 
 ### short_interest.csv format
 ```csv
-Symbol,ShortPercent,DaysToCover
-GME,25.5,2.1
-AMC,18.2,1.5
+ticker,short_percent
+GME,25.5
+AMC,18.2
 ```
-
-> **Note:** Short interest data from yfinance may be unavailable on GitHub Actions due to rate limiting. Add stocks to this CSV for manual overrides.
 
 ## Environment Variables
 
@@ -271,135 +254,63 @@ GMAIL_EMAIL=your-email@gmail.com
 GMAIL_PASSWORD=your-app-password  # Use Gmail App Password
 RECIPIENT_EMAIL=recipient@email.com
 
-# Schwab API (optional - for reliable options data)
+# Schwab API - Option A: schwabdev library (recommended)
+# Just run initial_auth() once, tokens saved to tokens.json
+
+# Schwab API - Option B: Environment variables
 SCHWAB_CLIENT_ID=your-client-id
 SCHWAB_CLIENT_SECRET=your-client-secret
 SCHWAB_REFRESH_TOKEN=your-refresh-token
 ```
 
+**Note:** Schwab credentials are optional. Without them, the scanner uses yfinance for options data.
+
 ## Options Data Sources
 
-The scanner fetches options data for covered calls and put spreads using a fallback chain:
+The scanner fetches options data for covered calls and put spreads using a fallback chain in `utils/options_data.py`:
 
 | Priority | Source | Notes |
 |----------|--------|-------|
-| 1 | Schwab API | Most reliable, requires developer account |
-| 2 | yfinance | Default, may be rate limited on GitHub Actions |
-| 3 | Yahoo HTML scrape | Fallback when yfinance fails |
+| 1 | **Schwab API** | Most reliable, includes Greeks (delta). Requires developer account. |
+| 2 | **yfinance** | Default free option. May be rate limited. |
+| 3 | **Yahoo HTML scrape** | Fallback when yfinance fails. |
+| 4 | **Yahoo Selenium** | Handles consent pages (disabled by default). |
 
-### Schwab API Setup (Recommended)
+### Schwab API Setup
 
-Schwab API provides reliable options data without rate limiting. Setup steps:
-
-1. **Create Developer Account**
-   - Go to https://developer.schwab.com
-   - Sign up with your Schwab brokerage credentials
-   - Wait for approval (may take 1-2 business days)
-
-2. **Create an Application**
-   - In the developer portal, create a new app
-   - Set callback URL to `https://127.0.0.1:8000/callback`
-   - Note your **Client ID** and **Client Secret**
-
-3. **Complete OAuth Flow**
-   - Run the OAuth helper script to get your refresh token:
-   ```bash
-   python utils/schwab_oauth.py
-   ```
-   - Follow the browser prompts to authorize
-   - Copy the **Refresh Token** that's generated
-
-4. **Configure Environment**
-   ```bash
-   # Add to .env file or export in shell
-   export SCHWAB_CLIENT_ID="your-client-id"
-   export SCHWAB_CLIENT_SECRET="your-client-secret"
-   export SCHWAB_REFRESH_TOKEN="your-refresh-token"
-   ```
-
-5. **For GitHub Actions**, add these as repository secrets:
-   - `SCHWAB_CLIENT_ID`
-   - `SCHWAB_CLIENT_SECRET`
-   - `SCHWAB_REFRESH_TOKEN`
-
-If Schwab credentials are not set, the scanner automatically falls back to yfinance, then Yahoo scraping.
-
-### Rate Limiting Notes
-
-- **yfinance** works well locally but GitHub Actions IPs are often rate-limited by Yahoo
-- **Short interest data** also comes from yfinance and may show "-" on GitHub Actions
-- For reliable CI/CD runs, Schwab API is strongly recommended
-
-## Trade Links (OptionStrat & Fidelity)
-
-The scanner generates clickable trade links for options strategies:
-
-### OptionStrat Links
-Opens pre-filled strategies in [OptionStrat](https://optionstrat.com) for:
-- P&L diagram visualization
-- Greeks analysis
-- Probability calculations
-- What-if scenarios
-
-**URL Formats:**
-```
-# Bear Put Spread
-https://optionstrat.com/build/bear-put-spread/MRK/-251219P85,251219P105
-
-# Covered Call
-https://optionstrat.com/build/covered-call/MRK/MRKx100,-.MRK251219C110
-
-# Long Put
-https://optionstrat.com/build/long-put/MRK/251219P105
-```
-
-### Fidelity P&L Links
-Opens Fidelity's Profit & Loss Calculator for individual legs:
-- **F-BuyP** = Buy put leg
-- **F-SellP** = Sell put leg  
-- **F-SellC** = Sell call leg (covered calls)
-
-> **Note:** Neither OptionStrat nor Fidelity P&L links execute trades directly. Use them to analyze, then enter trades manually at your broker.
-
-## Virtual Environment Setup
-
-A virtual environment (venv) isolates Python packages for this project. This is **required** on macOS which blocks system-wide pip installs.
-
-### Create and Activate venv
-
+**Option A: Using schwabdev library (recommended)**
 ```bash
-# Navigate to project directory
-cd ~/Dev/Python/Investing/market-psar-scanner
-
-# Create virtual environment
-python3 -m venv venv
-
-# Activate it (do this each session)
-source venv/bin/activate
-
-# Your prompt will show (venv) when active
-(venv) $ python3 market_scanner.py -mystocks
-
-# Deactivate when done
-deactivate
+pip install schwabdev
 ```
 
-### Install Dependencies
+1. Sign up at https://developer.schwab.com
+2. Create an application (callback URL: `https://127.0.0.1`)
+3. Run initial auth to get tokens:
+```python
+from data.schwab_options import initial_auth
+initial_auth()  # Opens browser for OAuth flow
+```
+4. Tokens saved to `tokens.json` - auto-refreshes
 
+**Option B: Using environment variables**
 ```bash
-# With venv activated
-pip install -r requirements.txt
+export SCHWAB_CLIENT_ID=your-client-id
+export SCHWAB_CLIENT_SECRET=your-client-secret  
+export SCHWAB_REFRESH_TOKEN=your-refresh-token
 ```
 
-### Why venv?
+### Fallback Behavior
 
-| Without venv | With venv |
-|--------------|-----------|
-| macOS blocks `pip install` | `pip install` works |
-| Version conflicts between projects | Isolated packages per project |
-| Hard to replicate setup | `requirements.txt` recreates exact setup |
+If Schwab credentials are not set or API fails:
+- Scanner automatically falls back to yfinance
+- If yfinance rate limited, falls back to Yahoo scraping
+- No configuration needed - just works with degraded reliability
 
-> **Tip:** GitHub Actions automatically creates its own venv from `requirements.txt`, so CI works without manual setup.
+### GitHub Actions
+
+For CI/CD, Schwab is optional. The scanner works fine with yfinance:
+- Don't add Schwab secrets to GitHub → uses yfinance automatically
+- Add secrets if you want more reliable options data in CI
 
 ## Requirements
 
@@ -414,47 +325,66 @@ webdriver-manager
 openpyxl
 lxml
 beautifulsoup4
+schwabdev          # Optional - for Schwab API
 ```
 
-Install (with venv activated): `pip install -r requirements.txt`
+Install: `pip install -r requirements.txt`
+
+**Note:** `schwabdev` is optional. Without it, options data comes from yfinance.
 
 ## Architecture
 
 ```
-market_scanner_v2/
-├── main.py                 # Entry point, email builder
-├── scanners/
-│   ├── base_scanner.py     # Core scanning logic
-│   ├── smart_buy.py        # Buy signal detection
-│   └── smart_short.py      # Short signal detection
-├── indicators/
-│   ├── prsi.py            # PSAR on RSI (primary signal)
-│   ├── psar.py            # Price PSAR
-│   ├── obv.py             # On-Balance Volume
-│   ├── momentum.py        # DMI, ADX, MACD
-│   └── atr.py             # Average True Range
+market-psar-scanner/
+├── main.py                 # V2 Entry point - PRSI primary, Days/DMI/ADX/MACD format
+├── market_scanner.py       # Alternative scanner - Mom/IR/Indicators format
+├── indicators.py           # Technical indicator calculations
+├── signals.py              # Zone classification logic
+├── scanners.py             # Scanner classes (SmartBuyScanner, etc.)
 ├── analysis/
-│   ├── covered_calls.py   # Covered call suggestions
-│   └── shorts.py          # Short analysis & put spreads
-├── signals/
-│   ├── zone_classifier.py # Buy/Sell zone logic
-│   └── warnings.py        # Risk warnings
+│   ├── covered_calls.py    # Covered call suggestions with trade links
+│   └── shorts.py           # Short analysis & put spreads
+├── reports/
+│   ├── portfolio_report.py # Portfolio HTML builder (used by market_scanner.py)
+│   └── shorts_report.py    # Shorts HTML builder
 ├── data/
-│   ├── cboe.py           # CBOE put/call ratio
-│   └── ibd_utils.py      # IBD list integration
-└── utils/
-    └── config.py         # Configuration constants
+│   ├── cboe.py             # CBOE put/call ratio (Selenium)
+│   ├── ibd_utils.py        # IBD list integration
+│   └── schwab_options.py   # Schwab API client (optional)
+├── utils/
+│   └── options_data.py     # Unified options fetcher (Schwab → yfinance → Yahoo)
+└── data_files/
+    ├── mystocks.txt        # Your portfolio tickers
+    ├── friends.txt         # Friends watchlist
+    ├── shorts.txt          # Shorts watchlist
+    └── short_interest.csv  # Manual short interest overrides
 ```
+
+### Two Scanner Systems
+
+| System | Command | Format | Best For |
+|--------|---------|--------|----------|
+| **main.py** (V2) | `python main.py -mystocks` | Days/PRSI/OBV/DMI/ADX/MACD/ATR% | Primary use |
+| **market_scanner.py** | `python market_scanner.py -mystocks` | Mom/ATR/PRSI/OBV/IR/Indicators | Alternative view |
+
+Both support `-mystocks`, `-friends`, `-shorts`, `-shortscan` flags.
 
 ## Version History
 
-### V2 (Current)
+### V2.1 (Current)
+- **Schwab API integration** for reliable options data
+- **OptionStrat trade links** for P&L visualization
+- **Fidelity trade links** for covered calls and put spreads
+- Unified options fetcher (`utils/options_data.py`) with fallback chain
+- Deep ITM put suggestions for shorts
+- Dual scanner system (main.py + market_scanner.py)
+
+### V2
 - PRSI as primary signal (leads price)
 - Covered call suggestions with Williams %R timing
 - Short scanning with put spread recommendations
 - VIX Put/Call Ratio sentiment
 - CBOE Put/Call Ratio sentiment
-- Fidelity trade links for options
 - Scan parameters display
 - GitHub Actions automation
 - ADX threshold for Strong Buys

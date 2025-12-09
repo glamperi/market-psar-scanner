@@ -54,8 +54,15 @@ def _get_schwab_token() -> Optional[str]:
     return None
 
 
-def _fetch_options_schwab(ticker: str, min_days: int = 14, max_days: int = 45) -> Optional[Dict]:
-    """Fetch options data from Schwab API."""
+def _fetch_options_schwab(ticker: str, min_days: int = 14, max_days: int = 45, option_type: str = 'ALL') -> Optional[Dict]:
+    """Fetch options data from Schwab API.
+    
+    Args:
+        ticker: Stock symbol
+        min_days: Minimum days to expiration
+        max_days: Maximum days to expiration
+        option_type: 'PUT', 'CALL', or 'ALL'
+    """
     token = _get_schwab_token()
     if not token:
         return None
@@ -69,7 +76,7 @@ def _fetch_options_schwab(ticker: str, min_days: int = 14, max_days: int = 45) -
         url = f"https://api.schwabapi.com/marketdata/v1/chains"
         params = {
             "symbol": ticker,
-            "contractType": "PUT",
+            "contractType": option_type,
             "fromDate": from_date,
             "toDate": to_date,
             "strikeCount": 20
@@ -87,42 +94,76 @@ def _fetch_options_schwab(ticker: str, min_days: int = 14, max_days: int = 45) -
 
 
 def _parse_schwab_options(data: Dict, ticker: str) -> Optional[Dict]:
-    """Parse Schwab options response."""
+    """Parse Schwab options response for both calls and puts."""
     try:
+        call_exp_map = data.get('callExpDateMap', {})
         put_exp_map = data.get('putExpDateMap', {})
-        if not put_exp_map:
+        
+        if not call_exp_map and not put_exp_map:
             return None
         
-        # Get first expiration
-        first_exp = list(put_exp_map.keys())[0]
-        exp_date = first_exp.split(':')[0]  # Format: "2025-01-17:45"
+        # Get first expiration from whichever is available
+        exp_date = None
+        if put_exp_map:
+            first_exp = list(put_exp_map.keys())[0]
+            exp_date = first_exp.split(':')[0]  # Format: "2025-01-17:45"
+        elif call_exp_map:
+            first_exp = list(call_exp_map.keys())[0]
+            exp_date = first_exp.split(':')[0]
         
-        strikes_data = put_exp_map[first_exp]
-        
-        # Collect all puts
+        # Collect puts
         puts = []
-        for strike_str, options in strikes_data.items():
-            strike = float(strike_str)
-            opt = options[0] if options else {}
-            puts.append({
-                'strike': strike,
-                'bid': opt.get('bid', 0),
-                'ask': opt.get('ask', 0),
-                'delta': opt.get('delta', 0),
-                'lastPrice': opt.get('last', 0)
-            })
+        if put_exp_map:
+            first_exp = list(put_exp_map.keys())[0]
+            strikes_data = put_exp_map[first_exp]
+            for strike_str, options in strikes_data.items():
+                strike = float(strike_str)
+                opt = options[0] if options else {}
+                puts.append({
+                    'strike': strike,
+                    'bid': opt.get('bid', 0),
+                    'ask': opt.get('ask', 0),
+                    'delta': opt.get('delta', 0),
+                    'lastPrice': opt.get('last', 0)
+                })
+        
+        # Collect calls
+        calls = []
+        if call_exp_map:
+            first_exp = list(call_exp_map.keys())[0]
+            if not exp_date:
+                exp_date = first_exp.split(':')[0]
+            strikes_data = call_exp_map[first_exp]
+            for strike_str, options in strikes_data.items():
+                strike = float(strike_str)
+                opt = options[0] if options else {}
+                calls.append({
+                    'strike': strike,
+                    'bid': opt.get('bid', 0),
+                    'ask': opt.get('ask', 0),
+                    'delta': opt.get('delta', 0),
+                    'lastPrice': opt.get('last', 0)
+                })
         
         return {
             'expiration': exp_date,
             'puts': puts,
+            'calls': calls,
             'source': 'schwab'
         }
     except Exception as e:
         return None
 
 
-def _fetch_options_yfinance(ticker: str, min_days: int = 14, max_days: int = 28) -> Optional[Dict]:
-    """Fetch options data from yfinance."""
+def _fetch_options_yfinance(ticker: str, min_days: int = 14, max_days: int = 28, option_type: str = 'ALL') -> Optional[Dict]:
+    """Fetch options data from yfinance.
+    
+    Args:
+        ticker: Stock symbol
+        min_days: Minimum days to expiration
+        max_days: Maximum days to expiration  
+        option_type: 'PUT', 'CALL', or 'ALL'
+    """
     try:
         import yfinance as yf
         
@@ -154,22 +195,35 @@ def _fetch_options_yfinance(ticker: str, min_days: int = 14, max_days: int = 28)
             return None
         
         chain = stock.option_chain(target_exp)
-        puts = chain.puts
-        if puts.empty:
-            return None
         
+        # Collect puts
         puts_list = []
-        for _, row in puts.iterrows():
-            puts_list.append({
-                'strike': row.get('strike', 0),
-                'bid': row.get('bid', 0) or 0,
-                'ask': row.get('ask', 0) or 0,
-                'lastPrice': row.get('lastPrice', 0) or 0
-            })
+        if option_type in ('PUT', 'ALL') and not chain.puts.empty:
+            for _, row in chain.puts.iterrows():
+                puts_list.append({
+                    'strike': row.get('strike', 0),
+                    'bid': row.get('bid', 0) or 0,
+                    'ask': row.get('ask', 0) or 0,
+                    'delta': row.get('delta', None),
+                    'lastPrice': row.get('lastPrice', 0) or 0
+                })
+        
+        # Collect calls
+        calls_list = []
+        if option_type in ('CALL', 'ALL') and not chain.calls.empty:
+            for _, row in chain.calls.iterrows():
+                calls_list.append({
+                    'strike': row.get('strike', 0),
+                    'bid': row.get('bid', 0) or 0,
+                    'ask': row.get('ask', 0) or 0,
+                    'delta': row.get('delta', None),
+                    'lastPrice': row.get('lastPrice', 0) or 0
+                })
         
         return {
             'expiration': target_exp,
             'puts': puts_list,
+            'calls': calls_list,
             'source': 'yfinance'
         }
         
@@ -432,7 +486,7 @@ def _fetch_options_yahoo_selenium(ticker: str, min_days: int = 14, max_days: int
         return None
 
 
-def fetch_options_chain(ticker: str, min_days: int = 14, max_days: int = 28, debug: bool = False) -> Optional[Dict]:
+def fetch_options_chain(ticker: str, min_days: int = 14, max_days: int = 28, option_type: str = 'ALL', debug: bool = False) -> Optional[Dict]:
     """
     Fetch options chain using best available source.
     
@@ -442,14 +496,21 @@ def fetch_options_chain(ticker: str, min_days: int = 14, max_days: int = 28, deb
     3. Yahoo Finance HTML scraping
     4. Yahoo Finance Selenium (handles consent page)
     
+    Args:
+        ticker: Stock symbol
+        min_days: Minimum days to expiration
+        max_days: Maximum days to expiration
+        option_type: 'PUT', 'CALL', or 'ALL'
+        debug: Print debug messages
+    
     Returns:
-        Dict with 'expiration', 'puts', 'source' or None if all fail
+        Dict with 'expiration', 'puts', 'calls', 'source' or None if all fail
     """
     # Try Schwab first if credentials exist
     if SCHWAB_CLIENT_ID:
         if debug:
             print(f"    [{ticker}] Trying Schwab API...")
-        result = _fetch_options_schwab(ticker, min_days, max_days)
+        result = _fetch_options_schwab(ticker, min_days, max_days, option_type)
         if result:
             if debug:
                 print(f"    [{ticker}] ✓ Schwab API success")
@@ -460,7 +521,7 @@ def fetch_options_chain(ticker: str, min_days: int = 14, max_days: int = 28, deb
     # Try yfinance
     if debug:
         print(f"    [{ticker}] Trying yfinance...")
-    result = _fetch_options_yfinance(ticker, min_days, max_days)
+    result = _fetch_options_yfinance(ticker, min_days, max_days, option_type)
     if result:
         if debug:
             print(f"    [{ticker}] ✓ yfinance success")
@@ -468,12 +529,16 @@ def fetch_options_chain(ticker: str, min_days: int = 14, max_days: int = 28, deb
     if debug:
         print(f"    [{ticker}] ✗ yfinance failed, trying Yahoo scrape...")
     
-    # Fallback to Yahoo scraping
-    result = _fetch_options_yahoo_scrape(ticker, min_days, max_days)
-    if result:
-        if debug:
-            print(f"    [{ticker}] ✓ Yahoo scrape success (source: {result.get('source', 'unknown')})")
-        return result
+    # Fallback to Yahoo scraping (only supports puts currently)
+    if option_type in ('PUT', 'ALL'):
+        result = _fetch_options_yahoo_scrape(ticker, min_days, max_days)
+        if result:
+            if debug:
+                print(f"    [{ticker}] ✓ Yahoo scrape success (source: {result.get('source', 'unknown')})")
+            # Add empty calls list for consistency
+            if 'calls' not in result:
+                result['calls'] = []
+            return result
     if debug:
         print(f"    [{ticker}] ✗ All sources failed")
     
@@ -540,4 +605,71 @@ def find_csp_puts(puts: list, current_price: float, min_ask_pct: float = 0.0005)
     return {
         'buy_put': buy_put,
         'sell_put': sell_put
+    }
+
+
+def find_cc_calls(calls: list, current_price: float, target_otm_pct: float = 8.0, min_bid: float = 0.05) -> Optional[dict]:
+    """
+    Find best call for covered call strategy.
+    
+    Strategy: Sell OTM call at least target_otm_pct above current price.
+    
+    Args:
+        calls: List of call dicts with 'strike', 'bid', 'ask', 'lastPrice', 'delta'
+        current_price: Current stock price
+        target_otm_pct: Target % out of the money (default 8%)
+        min_bid: Minimum bid price to consider
+    
+    Returns:
+        Dict with best call details or None if not found
+    """
+    if not calls or current_price <= 0:
+        return None
+    
+    target_strike = current_price * (1 + target_otm_pct / 100)
+    
+    # Sort calls by strike ascending
+    sorted_calls = sorted(calls, key=lambda x: x.get('strike', 0))
+    
+    # Filter to OTM calls only
+    otm_calls = [c for c in sorted_calls if c.get('strike', 0) > current_price]
+    
+    if not otm_calls:
+        return None
+    
+    # Try to find call at or above target strike with decent bid
+    best_call = None
+    for call in otm_calls:
+        strike = call.get('strike', 0)
+        bid = call.get('bid', 0) or 0
+        
+        if strike >= target_strike and bid >= min_bid:
+            best_call = call
+            break
+    
+    # Fallback: first OTM call with decent bid
+    if not best_call:
+        for call in otm_calls:
+            if call.get('bid', 0) >= min_bid:
+                best_call = call
+                break
+    
+    # Last resort: first OTM call
+    if not best_call:
+        best_call = otm_calls[0]
+    
+    strike = best_call.get('strike', 0)
+    bid = best_call.get('bid', 0) or 0
+    ask = best_call.get('ask', 0) or 0
+    mid = (bid + ask) / 2 if bid > 0 else ask
+    
+    return {
+        'strike': strike,
+        'bid': bid,
+        'ask': ask,
+        'mid': mid,
+        'delta': best_call.get('delta'),
+        'lastPrice': best_call.get('lastPrice', 0),
+        'upside_pct': ((strike - current_price) / current_price) * 100,
+        'premium_pct': (mid / current_price) * 100 if current_price > 0 else 0
     }

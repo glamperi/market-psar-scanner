@@ -217,6 +217,7 @@ def build_results_table(results: List[ScanResult], zone: str, use_v2: bool = Tru
             <th>Price</th>
             <th>PSAR%</th>
             <th>Days</th>
+            <th>Mom</th>
             <th>PRSI</th>
             <th>OBV</th>
             <th>Will%R</th>
@@ -232,6 +233,7 @@ def build_results_table(results: List[ScanResult], zone: str, use_v2: bool = Tru
             <th>Price</th>
             <th>PSAR%</th>
             <th>Days</th>
+            <th>Mom</th>
             <th>Signal</th>
             <th>PRSI</th>
             <th>OBV</th>
@@ -248,6 +250,7 @@ def build_results_table(results: List[ScanResult], zone: str, use_v2: bool = Tru
             <th>Price</th>
             <th>PSAR%</th>
             <th>Days</th>
+            <th>Mom</th>
             <th>PRSI</th>
             <th>OBV</th>
             <th>DMI</th>
@@ -263,6 +266,7 @@ def build_results_table(results: List[ScanResult], zone: str, use_v2: bool = Tru
             <th>Price</th>
             <th>PSAR%</th>
             <th>Days</th>
+            <th>Mom</th>
             <th>PRSI</th>
             <th>OBV</th>
             <th>DMI</th>
@@ -298,6 +302,10 @@ def build_results_table(results: List[ScanResult], zone: str, use_v2: bool = Tru
         adx_color = '#27ae60' if getattr(r, 'adx_strong', False) else '#e74c3c'
         macd_color = '#27ae60' if getattr(r, 'macd_bullish', False) else '#e74c3c'
         
+        # Momentum display (PSAR momentum 1-10)
+        momentum = getattr(r, 'momentum', 0)
+        momentum_display = get_momentum_display(momentum, use_v2)
+        
         # ATR color coding and covered call suggestion
         # Green: ATR < 3% (low volatility)
         # Yellow: ATR 3-5% (moderate)
@@ -323,6 +331,7 @@ def build_results_table(results: List[ScanResult], zone: str, use_v2: bool = Tru
             <td>${r.price:.2f}</td>
             <td style='color:{zone_color}; font-weight:bold;'>{r.psar_gap:+.1f}%</td>
             <td>{days_display}</td>
+            <td>{momentum_display}</td>
             <td>{get_prsi_display(r.prsi_bullish)}</td>
             <td>{get_obv_display(r.obv_bullish)}</td>
             <td>{williams_display}</td>
@@ -345,6 +354,7 @@ def build_results_table(results: List[ScanResult], zone: str, use_v2: bool = Tru
             <td>${r.price:.2f}</td>
             <td style='color:{zone_color}; font-weight:bold;'>{r.psar_gap:+.1f}%</td>
             <td>{days_display}</td>
+            <td>{momentum_display}</td>
             <td>{signal_display}</td>
             <td>{get_prsi_display(r.prsi_bullish)}</td>
             <td>{get_obv_display(r.obv_bullish)}</td>
@@ -362,6 +372,7 @@ def build_results_table(results: List[ScanResult], zone: str, use_v2: bool = Tru
             <td>${r.price:.2f}</td>
             <td style='color:{zone_color}; font-weight:bold;'>{r.psar_gap:+.1f}%</td>
             <td>{days_display}</td>
+            <td>{momentum_display}</td>
             <td>{get_prsi_display(r.prsi_bullish)}</td>
             <td>{get_obv_display(r.obv_bullish)}</td>
             <td style='color:{dmi_color};'>{dmi_check}</td>
@@ -378,6 +389,7 @@ def build_results_table(results: List[ScanResult], zone: str, use_v2: bool = Tru
             <td>${r.price:.2f}</td>
             <td style='color:{zone_color}; font-weight:bold;'>{r.psar_gap:+.1f}%</td>
             <td>{days_display}</td>
+            <td>{momentum_display}</td>
             <td>{get_prsi_display(r.prsi_bullish)}</td>
             <td>{get_obv_display(r.obv_bullish)}</td>
             <td style='color:{dmi_color};'>{dmi_check}</td>
@@ -756,6 +768,7 @@ def build_email_body(
         <strong>Legend:</strong><br>
         ⭐ = IBD Stock (click for research) | 
         <strong>Days:</strong> Days since price crossed PSAR (Strong/Buy) or PRSI flipped (Early Buy)<br>
+        <strong>Mom:</strong> PSAR Momentum (1-10) - <span style='color:#27ae60'>5-7✨ Ideal entry</span> | <span style='color:#e67e22'>8-9🔥 Strong/Late</span> | <span style='color:#c0392b'>10⏸️ Exhausted</span><br>
         PRSI: ↗️ Bullish ↘️ Bearish | OBV: 🟢 Accumulation 🔴 Distribution<br>
         <strong>Checkboxes:</strong> DMI (bulls control) | ADX (strong trend) | MACD (momentum up)<br>
         <strong>ATR%:</strong> <span style='color:#27ae60'>Green &lt;3%</span> | <span style='color:#f39c12'>Yellow 3-5%</span> | <span style='color:#e74c3c'>Red &gt;5% 📞 = Consider covered calls</span>
@@ -767,6 +780,7 @@ def build_email_body(
         <strong>Legend:</strong><br>
         ⭐ = IBD Stock (click for research) | 
         <strong>Days:</strong> Days since price crossed PSAR (Strong/Buy) or PRSI flipped (Early Buy)<br>
+        <strong>Mom:</strong> PSAR Momentum (1-10) - <span style='color:#27ae60'>5-7✨ Ideal entry</span> | <span style='color:#e67e22'>8-9🔥 Strong/Late</span> | <span style='color:#c0392b'>10⏸️ Exhausted</span><br>
         PRSI: ↗️ Bullish ↘️ Bearish | OBV: 🟢 Accumulation 🔴 Distribution<br>
         <strong>Checkboxes:</strong> DMI (bulls control) | ADX (strong trend) | MACD (momentum up)
     </div>
