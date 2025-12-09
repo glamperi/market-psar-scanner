@@ -153,6 +153,80 @@ def get_momentum_display(momentum: int, use_v2: bool = True) -> str:
             return f"<span style='color:#c0392b;'>{momentum}</span>"
 
 
+def calculate_sbi(days_in_trend: int, atr_percent: float, gap_slope: float) -> int:
+    """
+    Calculate Smart Buy Indicator (SBI) 0-10.
+    
+    Days 1-5: 100% ATR based (lower ATR = better entry)
+    Days 6+: 70% PSAR slope + 30% ATR
+    
+    Args:
+        days_in_trend: Days since PSAR crossed
+        atr_percent: ATR as % of price
+        gap_slope: Change in PSAR gap over 3 days (positive = widening = good)
+    
+    Returns:
+        SBI score 0-10 (10 = best)
+    """
+    # ATR score (inverse - lower ATR = higher score)
+    if atr_percent < 2:
+        atr_score = 10
+    elif atr_percent < 2.5:
+        atr_score = 9
+    elif atr_percent < 3:
+        atr_score = 8
+    elif atr_percent < 4:
+        atr_score = 7
+    elif atr_percent < 5:
+        atr_score = 6
+    else:
+        atr_score = 4  # High ATR gets low score
+    
+    if days_in_trend <= 5:
+        # Fresh signals: 100% ATR
+        sbi = atr_score
+    else:
+        # Established trends: 70% slope + 30% ATR
+        # Slope score: gap widening = good, narrowing = bad
+        if gap_slope >= 2:
+            slope_score = 10  # Strongly widening
+        elif gap_slope >= 1:
+            slope_score = 9   # Widening
+        elif gap_slope >= 0.5:
+            slope_score = 8   # Slightly widening
+        elif gap_slope >= -0.5:
+            slope_score = 7   # Stable
+        elif gap_slope >= -1:
+            slope_score = 5   # Slightly narrowing
+        elif gap_slope >= -2:
+            slope_score = 3   # Narrowing
+        else:
+            slope_score = 1   # Strongly narrowing (trend exhausting)
+        
+        sbi = int(0.7 * slope_score + 0.3 * atr_score)
+    
+    return max(0, min(10, sbi))
+
+
+def get_sbi_display(sbi: int) -> str:
+    """Get colored SBI display."""
+    if sbi >= 9:
+        return f"<span style='color:#1e8449; font-weight:bold;'>{sbi}</span>"
+    elif sbi >= 8:
+        return f"<span style='color:#27ae60; font-weight:bold;'>{sbi}</span>"
+    elif sbi >= 6:
+        return f"<span style='color:#f39c12;'>{sbi}</span>"
+    elif sbi >= 4:
+        return f"<span style='color:#e67e22;'>{sbi}</span>"
+    else:
+        return f"<span style='color:#c0392b;'>{sbi}</span>"
+
+
+def is_overheated(days_in_trend: int, atr_percent: float) -> bool:
+    """Check if a fresh signal is overheated (high ATR)."""
+    return days_in_trend <= 5 and atr_percent >= 5.0
+
+
 def get_prsi_display(prsi_bullish: bool) -> str:
     """Get PRSI trend display."""
     if prsi_bullish:
@@ -217,7 +291,7 @@ def build_results_table(results: List[ScanResult], zone: str, use_v2: bool = Tru
             <th>Price</th>
             <th>PSAR%</th>
             <th>Days</th>
-            <th>Mom</th>
+            <th>SBI</th>
             <th>PRSI</th>
             <th>OBV</th>
             <th>Will%R</th>
@@ -233,7 +307,7 @@ def build_results_table(results: List[ScanResult], zone: str, use_v2: bool = Tru
             <th>Price</th>
             <th>PSAR%</th>
             <th>Days</th>
-            <th>Mom</th>
+            <th>SBI</th>
             <th>Signal</th>
             <th>PRSI</th>
             <th>OBV</th>
@@ -250,7 +324,7 @@ def build_results_table(results: List[ScanResult], zone: str, use_v2: bool = Tru
             <th>Price</th>
             <th>PSAR%</th>
             <th>Days</th>
-            <th>Mom</th>
+            <th>SBI</th>
             <th>PRSI</th>
             <th>OBV</th>
             <th>DMI</th>
@@ -266,7 +340,7 @@ def build_results_table(results: List[ScanResult], zone: str, use_v2: bool = Tru
             <th>Price</th>
             <th>PSAR%</th>
             <th>Days</th>
-            <th>Mom</th>
+            <th>SBI</th>
             <th>PRSI</th>
             <th>OBV</th>
             <th>DMI</th>
@@ -302,15 +376,17 @@ def build_results_table(results: List[ScanResult], zone: str, use_v2: bool = Tru
         adx_color = '#27ae60' if getattr(r, 'adx_strong', False) else '#e74c3c'
         macd_color = '#27ae60' if getattr(r, 'macd_bullish', False) else '#e74c3c'
         
-        # Momentum display (PSAR momentum 1-10)
-        momentum = getattr(r, 'momentum', 0)
-        momentum_display = get_momentum_display(momentum, use_v2)
+        # SBI (Smart Buy Indicator) calculation
+        days_in_trend_val = getattr(r, 'psar_days_in_trend', 0)
+        atr_pct = getattr(r, 'atr_percent', 0)
+        gap_slope = getattr(r, 'psar_gap_slope', 0)
+        sbi = calculate_sbi(days_in_trend_val, atr_pct, gap_slope)
+        sbi_display = get_sbi_display(sbi)
         
         # ATR color coding and covered call suggestion
         # Green: ATR < 3% (low volatility)
         # Yellow: ATR 3-5% (moderate)
         # Red: ATR > 5% (high - consider covered calls)
-        atr_pct = getattr(r, 'atr_percent', 0)
         if atr_pct >= 5:
             atr_color = '#e74c3c'  # Red - high volatility
             atr_display = f"{atr_pct:.1f}% <a href='#cc-{r.ticker}' style='text-decoration:none;'>📞</a>"  # Clickable phone links to covered call
@@ -331,7 +407,7 @@ def build_results_table(results: List[ScanResult], zone: str, use_v2: bool = Tru
             <td>${r.price:.2f}</td>
             <td style='color:{zone_color}; font-weight:bold;'>{r.psar_gap:+.1f}%</td>
             <td>{days_display}</td>
-            <td>{momentum_display}</td>
+            <td>{sbi_display}</td>
             <td>{get_prsi_display(r.prsi_bullish)}</td>
             <td>{get_obv_display(r.obv_bullish)}</td>
             <td>{williams_display}</td>
@@ -354,7 +430,7 @@ def build_results_table(results: List[ScanResult], zone: str, use_v2: bool = Tru
             <td>${r.price:.2f}</td>
             <td style='color:{zone_color}; font-weight:bold;'>{r.psar_gap:+.1f}%</td>
             <td>{days_display}</td>
-            <td>{momentum_display}</td>
+            <td>{sbi_display}</td>
             <td>{signal_display}</td>
             <td>{get_prsi_display(r.prsi_bullish)}</td>
             <td>{get_obv_display(r.obv_bullish)}</td>
@@ -372,7 +448,7 @@ def build_results_table(results: List[ScanResult], zone: str, use_v2: bool = Tru
             <td>${r.price:.2f}</td>
             <td style='color:{zone_color}; font-weight:bold;'>{r.psar_gap:+.1f}%</td>
             <td>{days_display}</td>
-            <td>{momentum_display}</td>
+            <td>{sbi_display}</td>
             <td>{get_prsi_display(r.prsi_bullish)}</td>
             <td>{get_obv_display(r.obv_bullish)}</td>
             <td style='color:{dmi_color};'>{dmi_check}</td>
@@ -389,7 +465,7 @@ def build_results_table(results: List[ScanResult], zone: str, use_v2: bool = Tru
             <td>${r.price:.2f}</td>
             <td style='color:{zone_color}; font-weight:bold;'>{r.psar_gap:+.1f}%</td>
             <td>{days_display}</td>
-            <td>{momentum_display}</td>
+            <td>{sbi_display}</td>
             <td>{get_prsi_display(r.prsi_bullish)}</td>
             <td>{get_obv_display(r.obv_bullish)}</td>
             <td style='color:{dmi_color};'>{dmi_check}</td>
@@ -610,13 +686,58 @@ def build_email_body(
     # Sells: most negative gap first (deepest in downtrend)
     sells.sort(key=lambda x: x.psar_gap)
     
+    # =================================================================
+    # SBI FILTERING FOR STRONG BUYS
+    # =================================================================
+    # Separate overheated stocks (Days 1-5 with ATR >= 5%)
+    # Filter Strong Buys to SBI >= 8
+    overheated_watch = []
+    filtered_strong_buys = []
+    
+    for r in strong_buys:
+        days_in_trend = getattr(r, 'psar_days_in_trend', 0)
+        atr_pct = getattr(r, 'atr_percent', 0)
+        gap_slope = getattr(r, 'psar_gap_slope', 0)
+        sbi = calculate_sbi(days_in_trend, atr_pct, gap_slope)
+        
+        # Store SBI on result for display (temporary attribute)
+        r._sbi = sbi
+        
+        # Check if overheated (Days 1-5 with high ATR)
+        if is_overheated(days_in_trend, atr_pct):
+            overheated_watch.append(r)
+        elif sbi >= 8:
+            filtered_strong_buys.append(r)
+        else:
+            # SBI < 8, move to regular buys
+            buys.insert(0, r)  # Add to front of buys
+    
+    strong_buys = filtered_strong_buys
+    
+    # Re-sort buys since we added some
+    buys.sort(key=lambda x: (
+        getattr(x, 'psar_days_in_trend', 999),
+        0 if x.obv_bullish else 1,
+        -checkbox_count(x)
+    ))
+    
     # Limit lists to keep report readable
     strong_buys = strong_buys[:50]
     buys = buys[:100]
     early_buys = early_buys[:50]
-    dividend_buys = dividend_buys[:30]
     holds = holds[:50]
     sells = sells[:30]
+    
+    # Filter dividend_buys to SBI 9-10 only (best entry quality)
+    filtered_dividend_buys = []
+    for r in dividend_buys:
+        days_in_trend = getattr(r, 'psar_days_in_trend', 0)
+        atr_pct = getattr(r, 'atr_percent', 0)
+        gap_slope = getattr(r, 'psar_gap_slope', 0)
+        sbi = calculate_sbi(days_in_trend, atr_pct, gap_slope)
+        if sbi >= 9:
+            filtered_dividend_buys.append(r)
+    dividend_buys = filtered_dividend_buys[:30]
     
     # =================================================================
     # BUILD SUMMARY BOX
@@ -625,20 +746,22 @@ def build_email_body(
         html += f"""
         <div class='action-box'>
             <strong>📊 PORTFOLIO SUMMARY:</strong><br>
-            🟢🟢 <strong>{len(strong_buys)} Strong Buys</strong> (Fresh signals ≤5 days) |
-            🟢 <strong>{len(buys)} Buys</strong> (Established trends) |
+            🟢🟢 <strong>{len(strong_buys)} Strong Buys</strong> (SBI ≥8) |
+            🔥 <strong>{len(overheated_watch)} Overheated</strong> (High ATR - Watch) |
+            🟢 <strong>{len(buys)} Buys</strong> |
             ⏸️ {len(holds)} Holds |
             🔴 {len(sells)} Sells |
-            ⚡ <strong>{len(early_buys)} Early Buys</strong> (Speculative)
+            ⚡ <strong>{len(early_buys)} Early Buys</strong>
         </div>
         """
     else:
         html += f"""
         <div class='action-box'>
             <strong>📊 ACTIONABLE SIGNALS:</strong><br>
-            🟢🟢 <strong>{len(strong_buys)} Strong Buys</strong> (Fresh signals ≤5 days) |
-            ⚡ <strong>{len(early_buys)} Early Buys</strong> (Speculative, price < PSAR)<br>
-            💰 <strong>{len(dividend_buys)} Dividend Buys</strong> (Yield ≥{div_threshold}%)
+            🟢🟢 <strong>{len(strong_buys)} Strong Buys</strong> (SBI ≥8) |
+            🔥 <strong>{len(overheated_watch)} Overheated</strong> (High ATR - Watch) |
+            ⚡ <strong>{len(early_buys)} Early Buys</strong><br>
+            💰 <strong>{len(dividend_buys)} Dividend Buys</strong> (Yield ≥{div_threshold}%, SBI 9-10)
         </div>
         """
     
@@ -661,9 +784,17 @@ def build_email_body(
         display_strong = strong_buys if is_portfolio_mode else strong_buys[:strong_buy_limit]
         html += f"""
         <div class='section-strongbuy'>🟢🟢 STRONG BUY - Fresh Signals ({len(display_strong)} stocks{f' of {len(strong_buys)}' if len(strong_buys) > len(display_strong) else ''})</div>
-        <p style='color:#1e8449; font-size:11px; margin:5px 0;'>PRSI bullish + Price just crossed above PSAR (≤5 days). Sorted by freshness, then OBV, then checkboxes.</p>
+        <p style='color:#1e8449; font-size:11px; margin:5px 0;'>SBI ≥ 8. PRSI bullish + Price just crossed above PSAR (≤5 days) + Low ATR. Best entry quality.</p>
         """
         html += build_results_table(display_strong, 'STRONG_BUY', use_v2, is_portfolio_mode)
+    
+    # OVERHEATED WATCH - Fresh signals but high ATR (potential chase)
+    if overheated_watch:
+        html += f"""
+        <div class='section-warning' style='background-color:#e67e22;'>🔥 OVERHEATED WATCH - High ATR ({len(overheated_watch)} stocks)</div>
+        <p style='color:#e67e22; font-size:11px; margin:5px 0;'>Fresh signals (≤5 days) with ATR ≥5%. May be chasing - wait for pullback or use for covered calls.</p>
+        """
+        html += build_results_table(overheated_watch, 'STRONG_BUY', use_v2, is_portfolio_mode)
     
     # BUY - Established trends (Portfolio/Friends mode only)
     if buys and is_portfolio_mode:
@@ -757,7 +888,7 @@ def build_email_body(
             display_div = dividend_buys[:dividend_limit]
             html += f"""
             <div class='section-dividend' style='background-color:#27ae60; color:white; padding:12px; margin:20px 0 10px 0; font-size:14px; font-weight:bold;'>💰 DIVIDEND BUYS - Yield ≥{div_threshold}% ({len(display_div)} stocks{f' of {len(dividend_buys)}' if len(dividend_buys) > len(display_div) else ''})</div>
-            <p style='color:#27ae60; font-size:11px; margin:5px 0;'>Dividend stocks (≥{div_threshold}% yield) in Strong Buy/Buy zones. Sorted by signal freshness.</p>
+            <p style='color:#27ae60; font-size:11px; margin:5px 0;'>Dividend stocks (≥{div_threshold}% yield) with SBI 9-10. Best entry quality only.</p>
             """
             html += build_results_table(display_div, 'DIVIDEND', use_v2, False)
     
@@ -768,7 +899,8 @@ def build_email_body(
         <strong>Legend:</strong><br>
         ⭐ = IBD Stock (click for research) | 
         <strong>Days:</strong> Days since price crossed PSAR (Strong/Buy) or PRSI flipped (Early Buy)<br>
-        <strong>Mom:</strong> PSAR Momentum (1-10) - <span style='color:#27ae60'>5-7✨ Ideal entry</span> | <span style='color:#e67e22'>8-9🔥 Strong/Late</span> | <span style='color:#c0392b'>10⏸️ Exhausted</span><br>
+        <strong>SBI:</strong> Smart Buy Indicator (0-10) - Days 1-5: ATR based | Days 6+: 70% PSAR slope + 30% ATR<br>
+        &nbsp;&nbsp;&nbsp;<span style='color:#1e8449'>9-10 = Excellent</span> | <span style='color:#27ae60'>8 = Good</span> | <span style='color:#f39c12'>6-7 = OK</span> | <span style='color:#e67e22'>4-5 = Caution</span> | <span style='color:#c0392b'>0-3 = Avoid</span><br>
         PRSI: ↗️ Bullish ↘️ Bearish | OBV: 🟢 Accumulation 🔴 Distribution<br>
         <strong>Checkboxes:</strong> DMI (bulls control) | ADX (strong trend) | MACD (momentum up)<br>
         <strong>ATR%:</strong> <span style='color:#27ae60'>Green &lt;3%</span> | <span style='color:#f39c12'>Yellow 3-5%</span> | <span style='color:#e74c3c'>Red &gt;5% 📞 = Consider covered calls</span>
@@ -780,7 +912,8 @@ def build_email_body(
         <strong>Legend:</strong><br>
         ⭐ = IBD Stock (click for research) | 
         <strong>Days:</strong> Days since price crossed PSAR (Strong/Buy) or PRSI flipped (Early Buy)<br>
-        <strong>Mom:</strong> PSAR Momentum (1-10) - <span style='color:#27ae60'>5-7✨ Ideal entry</span> | <span style='color:#e67e22'>8-9🔥 Strong/Late</span> | <span style='color:#c0392b'>10⏸️ Exhausted</span><br>
+        <strong>SBI:</strong> Smart Buy Indicator (0-10) - Days 1-5: ATR based | Days 6+: 70% PSAR slope + 30% ATR<br>
+        &nbsp;&nbsp;&nbsp;<span style='color:#1e8449'>9-10 = Excellent</span> | <span style='color:#27ae60'>8 = Good</span> | <span style='color:#f39c12'>6-7 = OK</span> | <span style='color:#e67e22'>4-5 = Caution</span> | <span style='color:#c0392b'>0-3 = Avoid</span><br>
         PRSI: ↗️ Bullish ↘️ Bearish | OBV: 🟢 Accumulation 🔴 Distribution<br>
         <strong>Checkboxes:</strong> DMI (bulls control) | ADX (strong trend) | MACD (momentum up)
     </div>

@@ -251,6 +251,7 @@ def get_psar_data(df: pd.DataFrame) -> Dict[str, any]:
         - v1_zone: classic zone classification
         - entry_risk: v2 risk assessment
         - days_in_trend: consecutive days in current trend
+        - gap_slope: change in gap over 3 days (positive = widening)
     """
     if len(df) < 10:
         return None
@@ -272,6 +273,16 @@ def get_psar_data(df: pd.DataFrame) -> Dict[str, any]:
         else:
             break
     
+    # Calculate gap slope (3-day lookback)
+    # Positive = gap widening (bullish for longs)
+    # Negative = gap narrowing (trend weakening)
+    gap_slope = 0.0
+    if len(df) >= 4 and len(psar_series) >= 4:
+        price_3d_ago = df['Close'].iloc[-4]
+        psar_3d_ago = psar_series.iloc[-4]
+        gap_3d_ago = calculate_psar_gap(price_3d_ago, psar_3d_ago)
+        gap_slope = gap_percent - gap_3d_ago
+    
     return {
         'psar': current_psar,
         'price': current_price,
@@ -280,6 +291,7 @@ def get_psar_data(df: pd.DataFrame) -> Dict[str, any]:
         'v1_zone': classify_psar_zone_v1(gap_percent),
         'entry_risk': get_entry_risk(gap_percent),
         'days_in_trend': days_in_trend,
+        'gap_slope': gap_slope,
         'psar_series': psar_series  # Full series for charting
     }
 

@@ -58,6 +58,7 @@ class ScanResult:
     # Key indicators
     psar_gap: float
     psar_days_in_trend: int  # Days since price crossed PSAR (for sorting Strong Buys)
+    psar_gap_slope: float  # Gap change over 3 days (positive = widening)
     prsi_bullish: bool
     prsi_emoji: str
     prsi_days_since_flip: int  # Days since PRSI changed direction
@@ -313,6 +314,7 @@ class BaseScanner:
                 
                 psar_gap=indicators['psar_gap'],
                 psar_days_in_trend=indicators.get('psar_days_in_trend', 0),
+                psar_gap_slope=indicators.get('psar_gap_slope', 0),
                 prsi_bullish=indicators['prsi_bullish'],
                 prsi_emoji='↗️' if indicators['prsi_bullish'] else '↘️',
                 prsi_days_since_flip=indicators.get('prsi', {}).get('days_since_flip', 999),
