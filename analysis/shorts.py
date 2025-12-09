@@ -22,13 +22,17 @@ class ShortCandidate:
     # Technical indicators
     psar_gap: float  # Negative = below PSAR (good for shorts)
     psar_days_bearish: int  # Days price below PSAR
-    prsi_bearish: bool
-    prsi_days_since_flip: int
-    obv_bearish: bool  # Distribution = good for shorts
-    dmi_bearish: bool  # -DI > +DI
-    adx_value: float
-    williams_r: float  # Near 0 = overbought = good short entry
-    atr_percent: float
+    psar_gap_slope: float = 0  # Change in gap over 3 days (negative = accelerating down)
+    prsi_bearish: bool = False
+    prsi_days_since_flip: int = 0
+    obv_bearish: bool = False  # Distribution = good for shorts
+    dmi_bearish: bool = False  # -DI > +DI
+    adx_value: float = 20
+    williams_r: float = -50  # Near 0 = overbought = good short entry
+    atr_percent: float = 0
+    
+    # Smart Short Indicator
+    ssi: int = 0  # 0-10, higher = better short
     
     # Short interest data
     short_percent: Optional[float] = None  # % of float shorted
@@ -147,6 +151,98 @@ def get_squeeze_risk(short_percent: Optional[float]) -> Tuple[str, str]:
         return 'MODERATE', '🟡'
     else:
         return 'LOW', '🟢'
+
+
+def calculate_ssi(
+    psar_days_bearish: int,
+    atr_percent: float,
+    adx_value: float,
+    psar_gap_slope: float = 0
+) -> int:
+    """
+    Calculate Smart Short Indicator (SSI) 0-10.
+    
+    For shorts, we WANT:
+    - High ATR = more profit potential
+    - High ADX = strong trend
+    - Negative PSAR slope = gap widening downward (accelerating)
+    
+    Days 1-5 (Fresh breakdown): 50% ATR + 50% ADX
+    Days 6+ (Established): 40% PSAR slope + 35% ADX + 25% ATR
+    
+    Args:
+        psar_days_bearish: Days since price crossed below PSAR
+        atr_percent: ATR as % of price
+        adx_value: ADX trend strength
+        psar_gap_slope: Change in PSAR gap over 3 days (negative = gap widening down = good for shorts)
+    
+    Returns:
+        SSI score 0-10 (10 = best short candidate)
+    """
+    # ATR score - HIGHER is better for shorts (more profit potential)
+    if atr_percent >= 6:
+        atr_score = 10
+    elif atr_percent >= 5:
+        atr_score = 9
+    elif atr_percent >= 4:
+        atr_score = 8
+    elif atr_percent >= 3:
+        atr_score = 7
+    elif atr_percent >= 2:
+        atr_score = 5
+    else:
+        atr_score = 3  # Low ATR = less profit potential
+    
+    # ADX score - HIGHER is better (strong trend)
+    if adx_value >= 40:
+        adx_score = 10
+    elif adx_value >= 30:
+        adx_score = 8
+    elif adx_value >= 25:
+        adx_score = 6
+    elif adx_value >= 20:
+        adx_score = 4
+    else:
+        adx_score = 2  # Choppy = bad for shorts
+    
+    if psar_days_bearish <= 5:
+        # Fresh breakdown: 50% ATR + 50% ADX
+        ssi = int(0.5 * atr_score + 0.5 * adx_score)
+    else:
+        # Established downtrend: 40% slope + 35% ADX + 25% ATR
+        # PSAR slope - for shorts, NEGATIVE slope is good (gap widening downward)
+        # Note: psar_gap_slope is calculated as (current_gap - gap_3d_ago)
+        # For shorts with negative gap, more negative = widening down = good
+        if psar_gap_slope <= -2:
+            slope_score = 10  # Strongly accelerating down
+        elif psar_gap_slope <= -1:
+            slope_score = 9
+        elif psar_gap_slope <= -0.5:
+            slope_score = 8
+        elif psar_gap_slope <= 0.5:
+            slope_score = 6  # Stable
+        elif psar_gap_slope <= 1:
+            slope_score = 4  # Slowing
+        else:
+            slope_score = 2  # Reversing up = bad
+        
+        ssi = int(0.4 * slope_score + 0.35 * adx_score + 0.25 * atr_score)
+    
+    return max(0, min(10, ssi))
+
+
+def get_ssi_display(ssi: int) -> str:
+    """Get colored SSI display HTML."""
+    if ssi >= 9:
+        return f"<span style='color:#c0392b; font-weight:bold;'>{ssi}</span>"  # Dark red = excellent short
+    elif ssi >= 8:
+        return f"<span style='color:#e74c3c; font-weight:bold;'>{ssi}</span>"  # Red = good short
+    elif ssi >= 6:
+        return f"<span style='color:#f39c12;'>{ssi}</span>"  # Yellow = OK
+    elif ssi >= 4:
+        return f"<span style='color:#95a5a6;'>{ssi}</span>"  # Gray = weak
+    else:
+        return f"<span style='color:#27ae60;'>{ssi}</span>"  # Green = avoid (bullish)
 
 
 def calculate_short_score(
@@ -405,6 +501,7 @@ def analyze_short_candidate(
     adx_value: float,
     williams_r: float,
     atr_percent: float,
+    psar_gap_slope: float = 0,
     info: dict = None,
     fetch_options: bool = True
 ) -> ShortCandidate:
@@ -415,7 +512,7 @@ def analyze_short_candidate(
     short_percent, days_to_cover = get_short_interest(ticker, info)
     squeeze_risk, _ = get_squeeze_risk(short_percent)
     
-    # Calculate score
+    # Calculate short score (for categorization)
     score, reasons, warnings = calculate_short_score(
         psar_gap=psar_gap,
         psar_days_bearish=psar_days_bearish,
@@ -429,6 +526,9 @@ def analyze_short_candidate(
         short_percent=short_percent,
     )
     
+    # Calculate SSI (Smart Short Indicator)
+    ssi = calculate_ssi(psar_days_bearish, atr_percent, adx_value, psar_gap_slope)
+    
     # Categorize - pass williams_r for oversold check
     category = categorize_short(score, prsi_bearish, psar_gap, psar_days_bearish, williams_r)
     
@@ -437,6 +537,7 @@ def analyze_short_candidate(
         current_price=current_price,
         psar_gap=psar_gap,
         psar_days_bearish=psar_days_bearish,
+        psar_gap_slope=psar_gap_slope,
         prsi_bearish=prsi_bearish,
         prsi_days_since_flip=prsi_days_since_flip,
         obv_bearish=obv_bearish,
@@ -444,6 +545,7 @@ def analyze_short_candidate(
         adx_value=adx_value,
         williams_r=williams_r,
         atr_percent=atr_percent,
+        ssi=ssi,
         short_percent=short_percent,
         days_to_cover=days_to_cover,
         squeeze_risk=squeeze_risk,
@@ -478,10 +580,10 @@ def build_shorts_html_section(candidates: List[ShortCandidate], title: str, sect
     </div>
     <table>
         <tr style='background-color:{section_class}; color:white;'>
-            <th>Ticker</th><th>Price</th><th>PSAR%</th><th>Days</th><th>Score</th>
+            <th>Ticker</th><th>Price</th><th>PSAR%</th><th>Days</th><th>SSI</th>
             <th>PRSI</th><th>OBV</th><th>DMI</th><th>ADX</th><th>Will%R</th><th>ATR%</th>
             <th>SI%</th><th>Squeeze</th>
-            <th>Buy Put</th><th>Sell Put</th><th>Exp</th><th>Cost</th><th>Trade</th>
+            <th>Buy Put</th><th>Sell Put</th><th>Exp</th><th>Cost</th><th>Links</th>
         </tr>
     """
     
@@ -515,33 +617,34 @@ def build_shorts_html_section(candidates: List[ShortCandidate], title: str, sect
         exp = c.put_expiration if c.put_expiration else "-"
         cost = f"${c.spread_cost:.2f}" if c.spread_cost else "-"
         
-        # Build Fidelity links for put spread
-        fidelity_links = "-"
+        # SSI display
+        ssi_display = get_ssi_display(c.ssi)
+        
+        # Build trading links
+        trade_links = "-"
         if c.buy_put_strike and c.sell_put_strike and c.put_expiration:
             try:
-                from datetime import datetime
                 exp_date = datetime.strptime(c.put_expiration, '%Y-%m-%d')
                 exp_yymmdd = exp_date.strftime('%y%m%d')
                 buy_strike_int = int(c.buy_put_strike) if c.buy_put_strike == int(c.buy_put_strike) else c.buy_put_strike
                 sell_strike_int = int(c.sell_put_strike) if c.sell_put_strike == int(c.sell_put_strike) else c.sell_put_strike
                 
+                # Fidelity links
                 buy_symbol = f"-{c.ticker}{exp_yymmdd}P{buy_strike_int}"
                 sell_symbol = f"-{c.ticker}{exp_yymmdd}P{sell_strike_int}"
-                
                 buy_url = f"https://digital.fidelity.com/ftgw/digital/quick-quote/popup?symbol={buy_symbol}"
                 sell_url = f"https://digital.fidelity.com/ftgw/digital/quick-quote/popup?symbol={sell_symbol}"
                 
-                fidelity_links = f"<a href='{buy_url}' target='_blank' style='text-decoration:none;'>📈B</a> <a href='{sell_url}' target='_blank' style='text-decoration:none;'>📉S</a>"
+                # Optionstrat link for bear put spread
+                # Format: /build/bear-put-spread/TICKER/.TICKER241220P185,.TICKER241220P170
+                exp_optionstrat = exp_date.strftime('%y%m%d')
+                optionstrat_url = f"https://optionstrat.com/build/bear-put-spread/{c.ticker}/.{c.ticker}{exp_optionstrat}P{buy_strike_int},.{c.ticker}{exp_optionstrat}P{sell_strike_int}"
+                
+                trade_links = f"<a href='{optionstrat_url}' target='_blank' style='text-decoration:none;' title='Optionstrat'>📊</a> "
+                trade_links += f"<a href='{buy_url}' target='_blank' style='text-decoration:none;' title='Fidelity Buy'>📈</a> "
+                trade_links += f"<a href='{sell_url}' target='_blank' style='text-decoration:none;' title='Fidelity Sell'>📉</a>"
             except:
-                fidelity_links = "-"
-        
-        # Score color
-        if c.short_score >= 60:
-            score_color = '#27ae60'
-        elif c.short_score >= 40:
-            score_color = '#f39c12'
-        else:
-            score_color = '#e74c3c'
+                trade_links = "-"
         
         html += f"""
         <tr>
@@ -549,7 +652,7 @@ def build_shorts_html_section(candidates: List[ShortCandidate], title: str, sect
             <td>${c.current_price:.2f}</td>
             <td style='color:{"#e74c3c" if c.psar_gap < 0 else "#27ae60"};'>{c.psar_gap:+.1f}%</td>
             <td>{c.psar_days_bearish}</td>
-            <td style='color:{score_color}; font-weight:bold;'>{c.short_score}</td>
+            <td>{ssi_display}</td>
             <td>{prsi_icon}</td>
             <td>{obv_icon}</td>
             <td>{dmi_icon}</td>
@@ -562,7 +665,7 @@ def build_shorts_html_section(candidates: List[ShortCandidate], title: str, sect
             <td>{sell_put}</td>
             <td>{exp}</td>
             <td>{cost}</td>
-            <td>{fidelity_links}</td>
+            <td>{trade_links}</td>
         </tr>"""
     
     html += "</table>"
@@ -658,9 +761,12 @@ def build_shorts_report_html(
     html += """
     <div style='font-size:10px; color:#666; margin-top:20px; padding:10px; background:#f9f9f9;'>
         <strong>Legend:</strong><br>
+        <strong>SSI (Smart Short Indicator):</strong> 0-10 | Days 1-5: 50% ATR + 50% ADX | Days 6+: 40% Slope + 35% ADX + 25% ATR<br>
+        &nbsp;&nbsp;&nbsp;<span style='color:#c0392b'>9-10 = Prime</span> | <span style='color:#e74c3c'>8 = Good</span> | <span style='color:#f39c12'>6-7 = OK</span> | <span style='color:#95a5a6'>4-5 = Weak</span> | <span style='color:#27ae60'>0-3 = Avoid</span><br>
         PRSI: ↘️ Bearish | OBV: 🔴 Distribution 🟢 Accumulation<br>
-        Squeeze Risk: 🟢 Low (<5% SI) 🟡 Moderate (15-25%) 🔴 High (>25%)<br>
+        Squeeze Risk: 🟢 Low (<15% SI) 🟡 Moderate (15-25%) 🔴 High (>25%)<br>
         Will%R: Red = Overbought (good entry) | Green = Oversold (bounce risk)<br>
+        <strong>Links:</strong> 📊 Optionstrat | 📈 Fidelity Buy Put | 📉 Fidelity Sell Put<br>
         <strong>Put Spread Strategy:</strong> Buy higher strike put, sell lower strike put. Max loss = spread cost. Max profit = strike diff - cost.
     </div>
     """
@@ -738,9 +844,12 @@ def build_shorts_watchlist_html(
     html += """
     <div style='font-size:10px; color:#666; margin-top:20px; padding:10px; background:#f9f9f9;'>
         <strong>Legend:</strong><br>
+        <strong>SSI (Smart Short Indicator):</strong> 0-10 | Days 1-5: 50% ATR + 50% ADX | Days 6+: 40% Slope + 35% ADX + 25% ATR<br>
+        &nbsp;&nbsp;&nbsp;<span style='color:#c0392b'>9-10 = Prime</span> | <span style='color:#e74c3c'>8 = Good</span> | <span style='color:#f39c12'>6-7 = OK</span> | <span style='color:#95a5a6'>4-5 = Weak</span> | <span style='color:#27ae60'>0-3 = Avoid</span><br>
         PRSI: ↘️ Bearish (good) ↗️ Bullish (bad) | OBV: 🔴 Distribution (good) 🟢 Accumulation (bad)<br>
-        Squeeze Risk: 🟢 Low (<5% SI) 🟡 Moderate (15-25%) 🔴 High (>25%)<br>
+        Squeeze Risk: 🟢 Low (<15% SI) 🟡 Moderate (15-25%) 🔴 High (>25%)<br>
         Will%R: Red = Overbought (good entry) | Green = Oversold (bounce risk)<br>
+        <strong>Links:</strong> 📊 Optionstrat | 📈 Fidelity Buy Put | 📉 Fidelity Sell Put<br>
         <strong>Put Spread Strategy:</strong> Buy higher strike put, sell lower strike put. Max loss = spread cost. Max profit = strike diff - cost.
     </div>
     """

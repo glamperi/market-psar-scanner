@@ -153,17 +153,18 @@ def get_momentum_display(momentum: int, use_v2: bool = True) -> str:
             return f"<span style='color:#c0392b;'>{momentum}</span>"
 
 
-def calculate_sbi(days_in_trend: int, atr_percent: float, gap_slope: float) -> int:
+def calculate_sbi(days_in_trend: int, atr_percent: float, gap_slope: float, adx_value: float = 20) -> int:
     """
     Calculate Smart Buy Indicator (SBI) 0-10.
     
     Days 1-5: 100% ATR based (lower ATR = better entry)
-    Days 6+: 70% PSAR slope + 30% ATR
+    Days 6+: 50% PSAR slope + 30% ADX + 20% ATR
     
     Args:
         days_in_trend: Days since PSAR crossed
         atr_percent: ATR as % of price
         gap_slope: Change in PSAR gap over 3 days (positive = widening = good)
+        adx_value: ADX trend strength (higher = stronger trend)
     
     Returns:
         SBI score 0-10 (10 = best)
@@ -186,7 +187,8 @@ def calculate_sbi(days_in_trend: int, atr_percent: float, gap_slope: float) -> i
         # Fresh signals: 100% ATR
         sbi = atr_score
     else:
-        # Established trends: 70% slope + 30% ATR
+        # Established trends: 50% slope + 30% ADX + 20% ATR
+        
         # Slope score: gap widening = good, narrowing = bad
         if gap_slope >= 2:
             slope_score = 10  # Strongly widening
@@ -203,7 +205,19 @@ def calculate_sbi(days_in_trend: int, atr_percent: float, gap_slope: float) -> i
         else:
             slope_score = 1   # Strongly narrowing (trend exhausting)
         
-        sbi = int(0.7 * slope_score + 0.3 * atr_score)
+        # ADX score: higher ADX = stronger trend = better
+        if adx_value >= 40:
+            adx_score = 10  # Very strong trend
+        elif adx_value >= 30:
+            adx_score = 8   # Strong trend
+        elif adx_value >= 25:
+            adx_score = 6   # Moderate trend
+        elif adx_value >= 20:
+            adx_score = 4   # Weak trend
+        else:
+            adx_score = 2   # Choppy/no trend
+        
+        sbi = int(0.5 * slope_score + 0.3 * adx_score + 0.2 * atr_score)
     
     return max(0, min(10, sbi))
 
@@ -278,10 +292,11 @@ def build_results_table(results: List[ScanResult], zone: str, use_v2: bool = Tru
         'SELL': 'sell',
         'OVERSOLD_WATCH': 'oversold',
         'DIVIDEND': 'dividend',
+        'CUSTOM': 'custom',
     }.get(zone, 'hold')
     
-    # ATR column only for portfolio/friends mode (not dividend or early buy)
-    show_atr = is_portfolio_mode and zone not in ['DIVIDEND', 'EARLY_BUY']
+    # ATR column only for portfolio/friends mode (not dividend or early buy) OR custom tickers
+    show_atr = (is_portfolio_mode and zone not in ['DIVIDEND', 'EARLY_BUY']) or zone == 'CUSTOM'
     
     # Different columns for Early Buy vs others
     if zone == 'EARLY_BUY':
@@ -315,6 +330,23 @@ def build_results_table(results: List[ScanResult], zone: str, use_v2: bool = Tru
             <th>ADX</th>
             <th>MACD</th>
             <th>Yield</th>
+        """
+        days_col = 'psar'
+    elif zone == 'CUSTOM':
+        # Custom tickers: show Zone column to indicate signal status
+        header = """
+            <th>Ticker</th>
+            <th>Price</th>
+            <th>Zone</th>
+            <th>PSAR%</th>
+            <th>Days</th>
+            <th>SBI</th>
+            <th>PRSI</th>
+            <th>OBV</th>
+            <th>DMI</th>
+            <th>ADX</th>
+            <th>MACD</th>
+            <th>ATR%</th>
         """
         days_col = 'psar'
     elif show_atr:
@@ -380,7 +412,8 @@ def build_results_table(results: List[ScanResult], zone: str, use_v2: bool = Tru
         days_in_trend_val = getattr(r, 'psar_days_in_trend', 0)
         atr_pct = getattr(r, 'atr_percent', 0)
         gap_slope = getattr(r, 'psar_gap_slope', 0)
-        sbi = calculate_sbi(days_in_trend_val, atr_pct, gap_slope)
+        adx_val = getattr(r, 'adx_value', 20)
+        sbi = calculate_sbi(days_in_trend_val, atr_pct, gap_slope, adx_val)
         sbi_display = get_sbi_display(sbi)
         
         # ATR color coding and covered call suggestion
@@ -440,6 +473,26 @@ def build_results_table(results: List[ScanResult], zone: str, use_v2: bool = Tru
             <td>{yield_display}</td>
         </tr>
             """
+        elif zone == 'CUSTOM':
+            # Show Zone column with actual zone status
+            zone_emoji = get_zone_emoji(r.zone)
+            actual_zone = r.zone.replace('_', ' ').title()
+            html += f"""
+        <tr>
+            <td><strong>{ticker_display}</strong></td>
+            <td>${r.price:.2f}</td>
+            <td style='color:{zone_color}; font-weight:bold;'>{zone_emoji} {actual_zone}</td>
+            <td style='color:{zone_color}; font-weight:bold;'>{r.psar_gap:+.1f}%</td>
+            <td>{days_display}</td>
+            <td>{sbi_display}</td>
+            <td>{get_prsi_display(r.prsi_bullish)}</td>
+            <td>{get_obv_display(r.obv_bullish)}</td>
+            <td style='color:{dmi_color};'>{dmi_check}</td>
+            <td style='color:{adx_color};'>{adx_check}</td>
+            <td style='color:{macd_color};'>{macd_check}</td>
+            <td style='color:{atr_color}; font-weight:bold;'>{atr_display}</td>
+        </tr>
+            """
         elif show_atr:
             # Portfolio mode with ATR column
             html += f"""
@@ -488,7 +541,8 @@ def build_email_body(
     strong_buy_limit: int = 100,
     early_buy_limit: int = 50,
     dividend_limit: int = 30,
-    scan_params: dict = None
+    scan_params: dict = None,
+    custom_tickers: List[str] = None
 ) -> str:
     """Build complete HTML email body with actionable sections."""
     
@@ -510,6 +564,7 @@ def build_email_body(
             .section-warning { background-color: #e67e22; color: white; padding: 12px; margin: 20px 0 10px 0; font-size: 14px; font-weight: bold; }
             .section-sell { background-color: #c0392b; color: white; padding: 12px; margin: 20px 0 10px 0; font-size: 14px; font-weight: bold; }
             .section-dividend { background-color: #27ae60; color: white; padding: 12px; margin: 20px 0 10px 0; font-size: 14px; font-weight: bold; }
+            .section-custom { background-color: #3498db; color: white; padding: 12px; margin: 20px 0 10px 0; font-size: 14px; font-weight: bold; }
             
             .th-earlybuy { background-color: #2980b9; color: white; }
             .th-strongbuy { background-color: #1e8449; color: white; }
@@ -519,6 +574,7 @@ def build_email_body(
             .th-warning { background-color: #e67e22; color: white; }
             .th-sell { background-color: #c0392b; color: white; }
             .th-dividend { background-color: #27ae60; color: white; }
+            .th-custom { background-color: #3498db; color: white; }
             
             .summary-box { background-color: #ecf0f1; padding: 15px; margin: 15px 0; border-radius: 5px; }
             .v2-note { background-color: #e8f6f3; border-left: 4px solid #1abc9c; padding: 10px; margin: 10px 0; font-size: 11px; }
@@ -585,8 +641,8 @@ def build_email_body(
     MIN_DIVIDEND_MARKET_CAP = 1_000_000_000
     
     # ADX threshold for Strong Buys - set to 0 to disable, 15-25 typical
-    # ROLLBACK: Change this to 0 to disable ADX filtering for Strong Buys
-    STRONG_BUY_ADX_THRESHOLD = 15
+    # DISABLED: SBI now handles entry quality filtering
+    STRONG_BUY_ADX_THRESHOLD = 0
     
     is_portfolio_mode = mode in ['Portfolio', 'Friends']
     
@@ -698,7 +754,8 @@ def build_email_body(
         days_in_trend = getattr(r, 'psar_days_in_trend', 0)
         atr_pct = getattr(r, 'atr_percent', 0)
         gap_slope = getattr(r, 'psar_gap_slope', 0)
-        sbi = calculate_sbi(days_in_trend, atr_pct, gap_slope)
+        adx_val = getattr(r, 'adx_value', 20)
+        sbi = calculate_sbi(days_in_trend, atr_pct, gap_slope, adx_val)
         
         # Store SBI on result for display (temporary attribute)
         r._sbi = sbi
@@ -734,7 +791,8 @@ def build_email_body(
         days_in_trend = getattr(r, 'psar_days_in_trend', 0)
         atr_pct = getattr(r, 'atr_percent', 0)
         gap_slope = getattr(r, 'psar_gap_slope', 0)
-        sbi = calculate_sbi(days_in_trend, atr_pct, gap_slope)
+        adx_val = getattr(r, 'adx_value', 20)
+        sbi = calculate_sbi(days_in_trend, atr_pct, gap_slope, adx_val)
         if sbi >= 9:
             filtered_dividend_buys.append(r)
     dividend_buys = filtered_dividend_buys[:30]
@@ -777,6 +835,14 @@ def build_email_body(
     # =================================================================
     # BUILD TABLES FOR EACH SECTION
     # =================================================================
+    
+    # CUSTOM TICKERS - Show all requested tickers first (bypasses normal categorization)
+    if custom_tickers and results:
+        html += f"""
+        <div class='section-custom'>🔍 REQUESTED TICKERS ({len(results)} stocks)</div>
+        <p style='color:#3498db; font-size:11px; margin:5px 0;'>All indicators for requested tickers. Zone shows current signal status.</p>
+        """
+        html += build_results_table(results, 'CUSTOM', use_v2, True)  # Use portfolio mode to show ATR
     
     # STRONG BUY - Fresh confirmed signals (≤5 days since price crossed PSAR)
     if strong_buys:
@@ -830,15 +896,18 @@ def build_email_body(
             """
             html += build_results_table(early_buys, 'EARLY_BUY', use_v2, is_portfolio_mode)
         
-        # COVERED CALL CANDIDATES - High ATR stocks (Portfolio/Friends only)
+        # COVERED CALL CANDIDATES - High ATR + Low ADX stocks (Portfolio/Friends only)
+        # High ATR = good premium, Low ADX = choppy/less breakout risk
         if analyze_covered_call and build_covered_call_section:
-            # Find high ATR stocks (>5%) that are in buy zones
+            # Find stocks with ATR >= 5% AND ADX < 25 that are in buy zones
             high_atr_stocks = []
             all_buy_zone = strong_buys + buys + holds  # Include holds since you own them
             
             for r in all_buy_zone:
                 atr_pct = getattr(r, 'atr_percent', 0)
-                if atr_pct >= 5.0:  # High volatility threshold
+                adx_val = getattr(r, 'adx_value', 50)  # Default high to exclude if missing
+                # High ATR (good premium) + Low ADX (choppy, less breakout risk)
+                if atr_pct >= 5.0 and adx_val < 25:
                     # Determine signal type
                     days_in_trend = getattr(r, 'psar_days_in_trend', 999)
                     if r.prsi_bullish and r.psar_gap >= 0:
@@ -852,7 +921,7 @@ def build_email_body(
                     high_atr_stocks.append((r, signal_type))
             
             if high_atr_stocks:
-                print(f"\n  📞 Analyzing {len(high_atr_stocks)} high-ATR stocks for covered calls...")
+                print(f"\n  📞 Analyzing {len(high_atr_stocks)} high-ATR/low-ADX stocks for covered calls...")
                 cc_suggestions = []
                 
                 for r, signal_type in high_atr_stocks:
@@ -899,11 +968,11 @@ def build_email_body(
         <strong>Legend:</strong><br>
         ⭐ = IBD Stock (click for research) | 
         <strong>Days:</strong> Days since price crossed PSAR (Strong/Buy) or PRSI flipped (Early Buy)<br>
-        <strong>SBI:</strong> Smart Buy Indicator (0-10) - Days 1-5: ATR based | Days 6+: 70% PSAR slope + 30% ATR<br>
+        <strong>SBI:</strong> Smart Buy Indicator (0-10) - Days 1-5: ATR based | Days 6+: 50% Slope + 30% ADX + 20% ATR<br>
         &nbsp;&nbsp;&nbsp;<span style='color:#1e8449'>9-10 = Excellent</span> | <span style='color:#27ae60'>8 = Good</span> | <span style='color:#f39c12'>6-7 = OK</span> | <span style='color:#e67e22'>4-5 = Caution</span> | <span style='color:#c0392b'>0-3 = Avoid</span><br>
         PRSI: ↗️ Bullish ↘️ Bearish | OBV: 🟢 Accumulation 🔴 Distribution<br>
         <strong>Checkboxes:</strong> DMI (bulls control) | ADX (strong trend) | MACD (momentum up)<br>
-        <strong>ATR%:</strong> <span style='color:#27ae60'>Green &lt;3%</span> | <span style='color:#f39c12'>Yellow 3-5%</span> | <span style='color:#e74c3c'>Red &gt;5% 📞 = Consider covered calls</span>
+        <strong>ATR%:</strong> <span style='color:#27ae60'>Green &lt;3%</span> | <span style='color:#f39c12'>Yellow 3-5%</span> | <span style='color:#e74c3c'>Red &gt;5% + ADX&lt;25 📞 = Consider covered calls</span>
     </div>
     """
     else:
@@ -912,7 +981,7 @@ def build_email_body(
         <strong>Legend:</strong><br>
         ⭐ = IBD Stock (click for research) | 
         <strong>Days:</strong> Days since price crossed PSAR (Strong/Buy) or PRSI flipped (Early Buy)<br>
-        <strong>SBI:</strong> Smart Buy Indicator (0-10) - Days 1-5: ATR based | Days 6+: 70% PSAR slope + 30% ATR<br>
+        <strong>SBI:</strong> Smart Buy Indicator (0-10) - Days 1-5: ATR based | Days 6+: 50% Slope + 30% ADX + 20% ATR<br>
         &nbsp;&nbsp;&nbsp;<span style='color:#1e8449'>9-10 = Excellent</span> | <span style='color:#27ae60'>8 = Good</span> | <span style='color:#f39c12'>6-7 = OK</span> | <span style='color:#e67e22'>4-5 = Caution</span> | <span style='color:#c0392b'>0-3 = Avoid</span><br>
         PRSI: ↗️ Bullish ↘️ Bearish | OBV: 🟢 Accumulation 🔴 Distribution<br>
         <strong>Checkboxes:</strong> DMI (bulls control) | ADX (strong trend) | MACD (momentum up)
@@ -932,7 +1001,8 @@ def send_email(
     additional_email: Optional[str] = None,
     div_threshold: float = 2.0,
     custom_title: Optional[str] = None,
-    scan_params: dict = None
+    scan_params: dict = None,
+    custom_tickers: List[str] = None
 ) -> bool:
     """Send email report."""
     sender_email = os.getenv("GMAIL_EMAIL")
@@ -964,7 +1034,7 @@ def send_email(
         recipients.append(additional_email)
     msg['To'] = ", ".join(recipients)
     
-    html_body = build_email_body(results, mode, use_v2, cboe_text, total_scanned, div_threshold, scan_params=scan_params)
+    html_body = build_email_body(results, mode, use_v2, cboe_text, total_scanned, div_threshold, scan_params=scan_params, custom_tickers=custom_tickers)
     msg.attach(MIMEText(html_body, 'html'))
     
     try:
@@ -1194,14 +1264,16 @@ def main():
         summary = scanner.scan()
         
         # Collect all results WITH filtering applied
+        # EXCEPTION: --tickers bypasses all filters (user explicitly requested these)
         results = []
         filtered_count = 0
         ticker_list = scanner.get_tickers()
+        bypass_filters = custom_tickers is not None
         
         for ticker, source in ticker_list:
             result = scanner.scan_ticker(ticker, source)
             if result:
-                if scanner.filter_result(result):  # Apply filters!
+                if bypass_filters or scanner.filter_result(result):  # Bypass filters for custom tickers
                     results.append(result)
                 else:
                     filtered_count += 1
@@ -1235,6 +1307,7 @@ def main():
                     adx_value=getattr(r, 'adx_value', 20),
                     williams_r=getattr(r, 'williams_r', -50),
                     atr_percent=r.atr_percent,
+                    psar_gap_slope=getattr(r, 'psar_gap_slope', 0),
                     fetch_options=False
                 )
                 all_candidates.append(candidate)
@@ -1443,7 +1516,8 @@ def main():
                     additional_email=args.email_to,
                     div_threshold=args.div,
                     custom_title=args.title,
-                    scan_params=scan_params
+                    scan_params=scan_params,
+                    custom_tickers=custom_tickers
                 )
             
             # Save HTML if requested
@@ -1455,7 +1529,7 @@ def main():
                     'include_adr': args.adr,
                     'div_threshold': args.div
                 }
-                html = build_email_body(results, mode, use_v2, cboe_text, summary.total_scanned, args.div, scan_params=scan_params)
+                html = build_email_body(results, mode, use_v2, cboe_text, summary.total_scanned, args.div, scan_params=scan_params, custom_tickers=custom_tickers)
                 with open(args.html, 'w') as f:
                     f.write(html)
                 print(f"✓ HTML report saved to: {args.html}")
