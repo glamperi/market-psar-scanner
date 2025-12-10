@@ -96,8 +96,9 @@ class ScanResult:
     ibd_url: Optional[str] = None
     market_cap: Optional[float] = None
     volume: Optional[float] = None
+    relative_volume: Optional[float] = None  # Today's vol / 10-day avg
     dividend_yield: Optional[float] = None  # For dividend filtering
-    eps_growth: Optional[float] = None  # EPS growth % for filtering
+    eps_growth: Optional[float] = None  # Implied forward EPS growth % from PE ratios
     rev_growth: Optional[float] = None  # Revenue growth % for filtering
     
     # For portfolio mode
@@ -140,6 +141,7 @@ class BaseScanner:
         include_adr: bool = False,
         eps_filter: Optional[float] = None,
         rev_filter: Optional[float] = None,
+        rvol_filter: Optional[float] = None,
         max_workers: int = 10,
         progress_callback: Optional[Callable] = None
     ):
@@ -152,6 +154,7 @@ class BaseScanner:
             include_adr: Include ADR stocks
             eps_filter: Minimum EPS growth %
             rev_filter: Minimum revenue growth %
+            rvol_filter: Minimum relative volume (today vs 10-day avg)
             max_workers: Max parallel threads for data fetching
             progress_callback: Function to call with progress updates
         """
@@ -160,6 +163,7 @@ class BaseScanner:
         self.include_adr = include_adr
         self.eps_filter = eps_filter
         self.rev_filter = rev_filter
+        self.rvol_filter = rvol_filter
         self.max_workers = max_workers
         self.progress_callback = progress_callback
         
@@ -292,15 +296,37 @@ class BaseScanner:
             
             market_cap = info.get('marketCap')  # In raw dollars
             
-            # Get EPS and Revenue growth
-            # yfinance returns these as decimals (0.15 = 15%)
-            eps_growth = info.get('earningsGrowth')
-            if eps_growth is not None:
-                eps_growth = eps_growth * 100  # Convert to percentage
+            # Get EPS growth (implied forward growth from PE ratios)
+            # If forwardPE < trailingPE, earnings expected to grow
+            # Implied growth = (trailingPE / forwardPE - 1) * 100
+            eps_growth = None
+            trailing_pe = info.get('trailingPE')
+            forward_pe = info.get('forwardPE')
+            
+            if trailing_pe and forward_pe and forward_pe > 0 and trailing_pe > 0:
+                # Forward PE < Trailing PE means growth expected
+                eps_growth = ((trailing_pe / forward_pe) - 1) * 100
+            else:
+                # Fallback to historical earningsGrowth if PE not available
+                hist_growth = info.get('earningsGrowth')
+                if hist_growth is not None:
+                    eps_growth = hist_growth * 100
             
             rev_growth = info.get('revenueGrowth')
             if rev_growth is not None:
                 rev_growth = rev_growth * 100  # Convert to percentage
+            
+            # Calculate relative volume (today's vol / 10-day avg)
+            today_volume = info.get('volume', 0)
+            avg_volume_10d = info.get('averageVolume10days') or info.get('averageVolume', 0)
+            relative_volume = None
+            if today_volume and avg_volume_10d and avg_volume_10d > 0:
+                relative_volume = today_volume / avg_volume_10d
+            
+            # Check for stale/delisted stocks (no recent price data)
+            current_price = indicators.get('price', 0)
+            if current_price <= 0:
+                return None  # No valid price, likely delisted
             
             # Build result
             result = ScanResult(
@@ -344,6 +370,8 @@ class BaseScanner:
                 ibd_url=ibd_url,
                 dividend_yield=dividend_yield,
                 market_cap=market_cap,
+                volume=today_volume,
+                relative_volume=relative_volume,
                 eps_growth=eps_growth,
                 rev_growth=rev_growth,
                 
@@ -384,6 +412,13 @@ class BaseScanner:
             if result.rev_growth is None:
                 return False  # No revenue data, filter out
             if result.rev_growth < self.rev_filter:
+                return False
+        
+        # Relative volume filter
+        if self.rvol_filter is not None:
+            if result.relative_volume is None:
+                return False  # No volume data, filter out
+            if result.relative_volume < self.rvol_filter:
                 return False
         
         return True

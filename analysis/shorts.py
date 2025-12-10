@@ -6,6 +6,7 @@ Includes short interest data and squeeze risk warnings.
 """
 
 import yfinance as yf
+import pandas as pd
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Tuple
 from dataclasses import dataclass
@@ -157,28 +158,68 @@ def calculate_ssi(
     psar_days_bearish: int,
     atr_percent: float,
     adx_value: float,
-    psar_gap_slope: float = 0
+    psar_gap: float = 0,
+    psar_gap_slope: float = 0,
+    obv_bearish: bool = False,
+    williams_r: float = -50
 ) -> int:
     """
     Calculate Smart Short Indicator (SSI) 0-10.
     
     For shorts, we WANT:
+    - PSAR gap NEGATIVE = confirmed breakdown (not just PRSI flip)
+    - OBV distribution = selling pressure
+    - Williams %R overbought (> -20) = room to fall
     - High ATR = more profit potential
     - High ADX = strong trend
     - Negative PSAR slope = gap widening downward (accelerating)
     
-    Days 1-5 (Fresh breakdown): 50% ATR + 50% ADX
-    Days 6+ (Established): 40% PSAR slope + 35% ADX + 25% ATR
+    Days 1-5 (Fresh breakdown): 30% PSAR gap + 25% OBV + 25% Williams %R + 20% ATR
+    Days 6+ (Established): 30% PSAR slope + 25% ADX + 25% OBV + 20% ATR
     
     Args:
         psar_days_bearish: Days since price crossed below PSAR
         atr_percent: ATR as % of price
         adx_value: ADX trend strength
-        psar_gap_slope: Change in PSAR gap over 3 days (negative = gap widening down = good for shorts)
+        psar_gap: Current PSAR gap % (negative = below PSAR = confirmed)
+        psar_gap_slope: Change in PSAR gap over 3 days
+        obv_bearish: True if OBV shows distribution
+        williams_r: Williams %R value (-100 to 0, > -20 = overbought)
     
     Returns:
         SSI score 0-10 (10 = best short candidate)
     """
+    # PSAR gap score - NEGATIVE is required for confirmed short
+    # More negative = better (further below resistance)
+    if psar_gap <= -5:
+        gap_score = 10  # Deep below PSAR - strong confirmation
+    elif psar_gap <= -3:
+        gap_score = 9
+    elif psar_gap <= -1:
+        gap_score = 8
+    elif psar_gap < 0:
+        gap_score = 6   # Just below PSAR
+    elif psar_gap < 2:
+        gap_score = 3   # Still above PSAR - early/risky
+    else:
+        gap_score = 1   # Well above PSAR - too early!
+    
+    # OBV score - distribution (bearish) is what we want
+    obv_score = 10 if obv_bearish else 3
+    
+    # Williams %R score - overbought (> -20) = good short entry
+    # Oversold (< -80) = bounce risk, bad for shorts
+    if williams_r > -20:
+        wr_score = 10  # Overbought - ideal short entry
+    elif williams_r > -40:
+        wr_score = 8   # Upper range
+    elif williams_r > -60:
+        wr_score = 6   # Middle
+    elif williams_r > -80:
+        wr_score = 4   # Lower range
+    else:
+        wr_score = 2   # Oversold - bounce risk!
+    
     # ATR score - HIGHER is better for shorts (more profit potential)
     if atr_percent >= 6:
         atr_score = 10
@@ -206,13 +247,12 @@ def calculate_ssi(
         adx_score = 2  # Choppy = bad for shorts
     
     if psar_days_bearish <= 5:
-        # Fresh breakdown: 50% ATR + 50% ADX
-        ssi = int(0.5 * atr_score + 0.5 * adx_score)
+        # Fresh breakdown: 30% PSAR gap + 25% OBV + 25% Williams %R + 20% ATR
+        # Emphasis on CONFIRMATION (gap below PSAR) and TIMING (overbought)
+        ssi = int(0.30 * gap_score + 0.25 * obv_score + 0.25 * wr_score + 0.20 * atr_score)
     else:
-        # Established downtrend: 40% slope + 35% ADX + 25% ATR
+        # Established downtrend: 30% slope + 25% ADX + 25% OBV + 20% ATR
         # PSAR slope - for shorts, NEGATIVE slope is good (gap widening downward)
-        # Note: psar_gap_slope is calculated as (current_gap - gap_3d_ago)
-        # For shorts with negative gap, more negative = widening down = good
         if psar_gap_slope <= -2:
             slope_score = 10  # Strongly accelerating down
         elif psar_gap_slope <= -1:
@@ -226,7 +266,7 @@ def calculate_ssi(
         else:
             slope_score = 2  # Reversing up = bad
         
-        ssi = int(0.4 * slope_score + 0.35 * adx_score + 0.25 * atr_score)
+        ssi = int(0.30 * slope_score + 0.25 * adx_score + 0.25 * obv_score + 0.20 * atr_score)
     
     return max(0, min(10, ssi))
 
@@ -400,29 +440,40 @@ def get_put_spread_recommendation(
     Strategy: Buy higher strike put (delta ~0.40), sell lower strike put (delta ~0.15)
     Expiration: 2-4 weeks
     
-    Uses fallback chain: Schwab API -> yfinance -> Yahoo scrape
+    Uses Schwab API (via data.schwab_options) with yfinance fallback.
     """
     try:
-        # Use unified options fetcher with fallback chain
-        from utils.options_data import fetch_options_chain
+        # Use schwab_options module with Schwab API + yfinance fallback
+        from data.schwab_options import get_options_chain
         
-        options_data = fetch_options_chain(ticker, min_days, max_days)
+        options_data = get_options_chain(ticker, days_out=max_days)
         if not options_data:
             return None
         
-        target_exp = options_data['expiration']
-        puts_list = options_data['puts']
-        source = options_data.get('source', 'unknown')
-        
-        if not puts_list:
+        puts = options_data.get('puts')
+        if puts is None or puts.empty:
             return None
         
-        # Convert to DataFrame-like structure for processing
-        import pandas as pd
-        puts = pd.DataFrame(puts_list)
+        # Filter by expiration range
+        puts = puts.copy()
+        puts['exp_date'] = pd.to_datetime(puts['expiration'])
+        now = datetime.now()
+        puts['days_to_exp'] = (puts['exp_date'] - now).dt.days
+        puts = puts[(puts['days_to_exp'] >= min_days) & (puts['days_to_exp'] <= max_days)]
+        
+        if puts.empty:
+            # If no puts in range, take earliest available
+            puts = options_data['puts'].copy()
+            puts['exp_date'] = pd.to_datetime(puts['expiration'])
+            puts['days_to_exp'] = (puts['exp_date'] - now).dt.days
+            puts = puts[puts['days_to_exp'] >= min_days].head(50)
         
         if puts.empty:
             return None
+        
+        # Get the target expiration (first one in range)
+        target_exp = puts['expiration'].iloc[0]
+        puts = puts[puts['expiration'] == target_exp]
         
         # Buy put target: delta ~0.40 = roughly ATM or slightly ITM
         buy_target_strike = current_price * 1.05  # 5% ITM
@@ -431,7 +482,6 @@ def get_put_spread_recommendation(
         sell_target_strike = current_price * 0.85  # 15% OTM
         
         # Find closest strikes
-        puts = puts.copy()
         puts['buy_diff'] = abs(puts['strike'] - buy_target_strike)
         puts['sell_diff'] = abs(puts['strike'] - sell_target_strike)
         
@@ -453,14 +503,16 @@ def get_put_spread_recommendation(
                 buy_put = puts[puts['strike'] == buy_strike].iloc[0]
                 sell_put = puts[puts['strike'] == sell_strike].iloc[0]
         
-        # Calculate costs
+        # Calculate costs - handle both Schwab and yfinance column names
         buy_bid = buy_put.get('bid', 0) or 0
         buy_ask = buy_put.get('ask', 0) or 0
-        buy_mid = (buy_bid + buy_ask) / 2 if buy_bid > 0 and buy_ask > 0 else buy_put.get('lastPrice', 0)
+        buy_last = buy_put.get('last', buy_put.get('lastPrice', 0)) or 0
+        buy_mid = (buy_bid + buy_ask) / 2 if buy_bid > 0 and buy_ask > 0 else buy_last
         
         sell_bid = sell_put.get('bid', 0) or 0
         sell_ask = sell_put.get('ask', 0) or 0
-        sell_mid = (sell_bid + sell_ask) / 2 if sell_bid > 0 and sell_ask > 0 else sell_put.get('lastPrice', 0)
+        sell_last = sell_put.get('last', sell_put.get('lastPrice', 0)) or 0
+        sell_mid = (sell_bid + sell_ask) / 2 if sell_bid > 0 and sell_ask > 0 else sell_last
         
         spread_cost = buy_mid - sell_mid  # Net debit
         max_profit = buy_strike - sell_strike - spread_cost  # Max profit at expiration
@@ -478,13 +530,13 @@ def get_put_spread_recommendation(
             'max_profit': max_profit,
             'buy_premium': buy_mid,
             'sell_premium': sell_mid,
-            'source': source
+            'source': options_data.get('source', 'unknown')
         }
         
     except Exception as e:
         error_msg = str(e)
         # Only print warning for non-rate-limit errors
-        if 'Too Many Requests' not in error_msg:
+        if 'Too Many Requests' not in error_msg and '429' not in error_msg:
             print(f"    Warning: Could not get put spread for {ticker}: {e}")
         return None
 
@@ -527,7 +579,15 @@ def analyze_short_candidate(
     )
     
     # Calculate SSI (Smart Short Indicator)
-    ssi = calculate_ssi(psar_days_bearish, atr_percent, adx_value, psar_gap_slope)
+    ssi = calculate_ssi(
+        psar_days_bearish=psar_days_bearish,
+        atr_percent=atr_percent,
+        adx_value=adx_value,
+        psar_gap=psar_gap,
+        psar_gap_slope=psar_gap_slope,
+        obv_bearish=obv_bearish,
+        williams_r=williams_r
+    )
     
     # Categorize - pass williams_r for oversold check
     category = categorize_short(score, prsi_bearish, psar_gap, psar_days_bearish, williams_r)
@@ -636,9 +696,10 @@ def build_shorts_html_section(candidates: List[ShortCandidate], title: str, sect
                 sell_url = f"https://digital.fidelity.com/ftgw/digital/quick-quote/popup?symbol={sell_symbol}"
                 
                 # Optionstrat link for bear put spread
-                # Format: /build/bear-put-spread/TICKER/.TICKER241220P185,.TICKER241220P170
+                # Format: BTO higher strike, STO lower strike
+                # Use - prefix for sell leg
                 exp_optionstrat = exp_date.strftime('%y%m%d')
-                optionstrat_url = f"https://optionstrat.com/build/bear-put-spread/{c.ticker}/.{c.ticker}{exp_optionstrat}P{buy_strike_int},.{c.ticker}{exp_optionstrat}P{sell_strike_int}"
+                optionstrat_url = f"https://optionstrat.com/build/bear-put-spread/{c.ticker}/.{c.ticker}{exp_optionstrat}P{buy_strike_int},-.{c.ticker}{exp_optionstrat}P{sell_strike_int}"
                 
                 trade_links = f"<a href='{optionstrat_url}' target='_blank' style='text-decoration:none;' title='Optionstrat'>📊</a> "
                 trade_links += f"<a href='{buy_url}' target='_blank' style='text-decoration:none;' title='Fidelity Buy'>📈</a> "
@@ -761,9 +822,9 @@ def build_shorts_report_html(
     html += """
     <div style='font-size:10px; color:#666; margin-top:20px; padding:10px; background:#f9f9f9;'>
         <strong>Legend:</strong><br>
-        <strong>SSI (Smart Short Indicator):</strong> 0-10 | Days 1-5: 50% ATR + 50% ADX | Days 6+: 40% Slope + 35% ADX + 25% ATR<br>
+        <strong>SSI (Smart Short Indicator):</strong> 0-10 | Days 1-5: 30% Gap + 25% OBV + 25% Will%R + 20% ATR | Days 6+: 30% Slope + 25% ADX + 25% OBV + 20% ATR<br>
         &nbsp;&nbsp;&nbsp;<span style='color:#c0392b'>9-10 = Prime</span> | <span style='color:#e74c3c'>8 = Good</span> | <span style='color:#f39c12'>6-7 = OK</span> | <span style='color:#95a5a6'>4-5 = Weak</span> | <span style='color:#27ae60'>0-3 = Avoid</span><br>
-        PRSI: ↘️ Bearish | OBV: 🔴 Distribution 🟢 Accumulation<br>
+        PRSI: ↘️ Bearish | OBV: 🔴 Distribution (good) 🟢 Accumulation (bad)<br>
         Squeeze Risk: 🟢 Low (<15% SI) 🟡 Moderate (15-25%) 🔴 High (>25%)<br>
         Will%R: Red = Overbought (good entry) | Green = Oversold (bounce risk)<br>
         <strong>Links:</strong> 📊 Optionstrat | 📈 Fidelity Buy Put | 📉 Fidelity Sell Put<br>
@@ -844,7 +905,7 @@ def build_shorts_watchlist_html(
     html += """
     <div style='font-size:10px; color:#666; margin-top:20px; padding:10px; background:#f9f9f9;'>
         <strong>Legend:</strong><br>
-        <strong>SSI (Smart Short Indicator):</strong> 0-10 | Days 1-5: 50% ATR + 50% ADX | Days 6+: 40% Slope + 35% ADX + 25% ATR<br>
+        <strong>SSI (Smart Short Indicator):</strong> 0-10 | Days 1-5: 30% Gap + 25% OBV + 25% Will%R + 20% ATR | Days 6+: 30% Slope + 25% ADX + 25% OBV + 20% ATR<br>
         &nbsp;&nbsp;&nbsp;<span style='color:#c0392b'>9-10 = Prime</span> | <span style='color:#e74c3c'>8 = Good</span> | <span style='color:#f39c12'>6-7 = OK</span> | <span style='color:#95a5a6'>4-5 = Weak</span> | <span style='color:#27ae60'>0-3 = Avoid</span><br>
         PRSI: ↘️ Bearish (good) ↗️ Bullish (bad) | OBV: 🔴 Distribution (good) 🟢 Accumulation (bad)<br>
         Squeeze Risk: 🟢 Low (<15% SI) 🟡 Moderate (15-25%) 🔴 High (>25%)<br>

@@ -157,7 +157,11 @@ def calculate_sbi(days_in_trend: int, atr_percent: float, gap_slope: float, adx_
     """
     Calculate Smart Buy Indicator (SBI) 0-10.
     
-    Days 1-5: 100% ATR based (lower ATR = better entry)
+    Days 1-4: Binary ATR threshold (looser for fresher signals)
+      Day 1: ATR < 7% = 10, else avoid
+      Day 2: ATR < 6% = 10, else avoid
+      Day 3-4: ATR < 5% = 10, else avoid
+    Day 5: Gradual ATR scoring from 4% threshold
     Days 6+: 50% PSAR slope + 30% ADX + 20% ATR
     
     Args:
@@ -169,25 +173,47 @@ def calculate_sbi(days_in_trend: int, atr_percent: float, gap_slope: float, adx_
     Returns:
         SBI score 0-10 (10 = best)
     """
-    # ATR score (inverse - lower ATR = higher score)
-    if atr_percent < 2:
-        atr_score = 10
-    elif atr_percent < 2.5:
-        atr_score = 9
-    elif atr_percent < 3:
-        atr_score = 8
-    elif atr_percent < 4:
-        atr_score = 7
-    elif atr_percent < 5:
-        atr_score = 6
-    else:
-        atr_score = 4  # High ATR gets low score
+    if days_in_trend == 1:
+        # Day 1: Fresh breakout, allow up to 7% ATR
+        sbi = 10 if atr_percent < 7 else 4
     
-    if days_in_trend <= 5:
-        # Fresh signals: 100% ATR
-        sbi = atr_score
+    elif days_in_trend == 2:
+        # Day 2: Allow up to 6% ATR
+        sbi = 10 if atr_percent < 6 else 4
+    
+    elif days_in_trend in [3, 4]:
+        # Day 3-4: Allow up to 5% ATR
+        sbi = 10 if atr_percent < 5 else 4
+    
+    elif days_in_trend == 5:
+        # Day 5: Gradual scoring from 4% threshold
+        if atr_percent < 4:
+            sbi = 10
+        elif atr_percent < 5:
+            sbi = 8
+        elif atr_percent < 6:
+            sbi = 6
+        elif atr_percent < 7:
+            sbi = 4
+        else:
+            sbi = 2
+    
     else:
-        # Established trends: 50% slope + 30% ADX + 20% ATR
+        # Days 6+: 50% slope + 30% ADX + 20% ATR
+        
+        # ATR score for established trends (stricter)
+        if atr_percent < 2:
+            atr_score = 10
+        elif atr_percent < 2.5:
+            atr_score = 9
+        elif atr_percent < 3:
+            atr_score = 8
+        elif atr_percent < 4:
+            atr_score = 7
+        elif atr_percent < 5:
+            atr_score = 6
+        else:
+            atr_score = 4
         
         # Slope score: gap widening = good, narrowing = bad
         if gap_slope >= 2:
@@ -237,8 +263,21 @@ def get_sbi_display(sbi: int) -> str:
 
 
 def is_overheated(days_in_trend: int, atr_percent: float) -> bool:
-    """Check if a fresh signal is overheated (high ATR)."""
-    return days_in_trend <= 5 and atr_percent >= 5.0
+    """
+    Check if a fresh signal is overheated (high ATR relative to day).
+    
+    Day-specific thresholds:
+    - Day 1: >= 7% is overheated
+    - Day 2: >= 6% is overheated
+    - Day 3-5: >= 5% is overheated (original threshold)
+    """
+    if days_in_trend == 1:
+        return atr_percent >= 7.0
+    elif days_in_trend == 2:
+        return atr_percent >= 6.0
+    elif days_in_trend <= 5:
+        return atr_percent >= 5.0
+    return False  # Days 6+ not considered overheated
 
 
 def get_prsi_display(prsi_bullish: bool) -> str:
@@ -598,9 +637,11 @@ def build_email_body(
             else:
                 params_parts.append(f"Market Cap ≥ ${mc:.0f}M")
         if scan_params.get('eps_growth'):
-            params_parts.append(f"EPS Growth ≥ {scan_params['eps_growth']}%")
+            params_parts.append(f"Fwd EPS Growth ≥ {scan_params['eps_growth']}%")
         if scan_params.get('rev_growth'):
             params_parts.append(f"Revenue Growth ≥ {scan_params['rev_growth']}%")
+        if scan_params.get('rvol'):
+            params_parts.append(f"Rel Volume ≥ {scan_params['rvol']}x")
         if scan_params.get('include_adr'):
             params_parts.append("Including ADRs")
         if scan_params.get('div_threshold'):
@@ -968,7 +1009,7 @@ def build_email_body(
         <strong>Legend:</strong><br>
         ⭐ = IBD Stock (click for research) | 
         <strong>Days:</strong> Days since price crossed PSAR (Strong/Buy) or PRSI flipped (Early Buy)<br>
-        <strong>SBI:</strong> Smart Buy Indicator (0-10) - Days 1-5: ATR based | Days 6+: 50% Slope + 30% ADX + 20% ATR<br>
+        <strong>SBI:</strong> Smart Buy Indicator (0-10) - Days 1-4: ATR threshold (D1&lt;7%, D2&lt;6%, D3-4&lt;5%) | Day 5: Gradual | Days 6+: Slope+ADX+ATR<br>
         &nbsp;&nbsp;&nbsp;<span style='color:#1e8449'>9-10 = Excellent</span> | <span style='color:#27ae60'>8 = Good</span> | <span style='color:#f39c12'>6-7 = OK</span> | <span style='color:#e67e22'>4-5 = Caution</span> | <span style='color:#c0392b'>0-3 = Avoid</span><br>
         PRSI: ↗️ Bullish ↘️ Bearish | OBV: 🟢 Accumulation 🔴 Distribution<br>
         <strong>Checkboxes:</strong> DMI (bulls control) | ADX (strong trend) | MACD (momentum up)<br>
@@ -981,7 +1022,7 @@ def build_email_body(
         <strong>Legend:</strong><br>
         ⭐ = IBD Stock (click for research) | 
         <strong>Days:</strong> Days since price crossed PSAR (Strong/Buy) or PRSI flipped (Early Buy)<br>
-        <strong>SBI:</strong> Smart Buy Indicator (0-10) - Days 1-5: ATR based | Days 6+: 50% Slope + 30% ADX + 20% ATR<br>
+        <strong>SBI:</strong> Smart Buy Indicator (0-10) - Days 1-4: ATR threshold (D1&lt;7%, D2&lt;6%, D3-4&lt;5%) | Day 5: Gradual | Days 6+: Slope+ADX+ATR<br>
         &nbsp;&nbsp;&nbsp;<span style='color:#1e8449'>9-10 = Excellent</span> | <span style='color:#27ae60'>8 = Good</span> | <span style='color:#f39c12'>6-7 = OK</span> | <span style='color:#e67e22'>4-5 = Caution</span> | <span style='color:#c0392b'>0-3 = Avoid</span><br>
         PRSI: ↗️ Bullish ↘️ Bearish | OBV: 🟢 Accumulation 🔴 Distribution<br>
         <strong>Checkboxes:</strong> DMI (bulls control) | ADX (strong trend) | MACD (momentum up)
@@ -1137,13 +1178,15 @@ V2 Key Changes:
     
     # Filters
     parser.add_argument('--eps', type=float, default=None,
-                       help='Minimum EPS growth %%')
+                       help='Minimum implied forward EPS growth %% (from PE ratios)')
     parser.add_argument('--rev', type=float, default=None,
                        help='Minimum revenue growth %%')
     parser.add_argument('--mc', type=float, default=None,
                        help='Minimum market cap in millions (default 5000 = $5B)')
     parser.add_argument('--adr', action='store_true',
                        help='Include ADR stocks')
+    parser.add_argument('--rvol', type=float, default=None,
+                       help='Minimum relative volume (today vs 10-day avg). Range: 0.1-100. E.g., 1.5 = 150%% of avg')
     
     # Email
     parser.add_argument('--no-email', action='store_true',
@@ -1231,6 +1274,7 @@ def main():
         'include_adr': args.adr,
         'eps_filter': args.eps,
         'rev_filter': args.rev,
+        'rvol_filter': args.rvol,
         'max_workers': args.workers,
         'progress_callback': progress
     }
@@ -1503,6 +1547,7 @@ def main():
                     'market_cap': args.mc,
                     'eps_growth': args.eps,
                     'rev_growth': args.rev,
+                    'rvol': args.rvol,
                     'include_adr': args.adr,
                     'div_threshold': args.div
                 }
@@ -1526,6 +1571,7 @@ def main():
                     'market_cap': args.mc,
                     'eps_growth': args.eps,
                     'rev_growth': args.rev,
+                    'rvol': args.rvol,
                     'include_adr': args.adr,
                     'div_threshold': args.div
                 }
