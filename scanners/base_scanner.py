@@ -90,6 +90,16 @@ class ScanResult:
     # Raw ADX value for filtering (has default since it's optional)
     adx_value: float = 0.0
     
+    # PRSI(4) fast momentum indicators (defaults since optional)
+    prsi_fast_bullish: bool = True  # PRSI(4) for exit warnings
+    prsi_momentum_warning: bool = False  # PRSI(14) bullish but PRSI(4) bearish
+    
+    # ATR volatility: ATR as % of price (always positive, for SBI calculation)
+    atr_volatility: float = 0.0
+    
+    # Broken signal: stock recently broke DOWN through PSAR (was bullish, now bearish)
+    is_broken: bool = False
+    
     # Optional fields
     source: str = ""
     ibd_stock: bool = False
@@ -300,28 +310,49 @@ class BaseScanner:
             # If forwardPE < trailingPE, earnings expected to grow
             # Implied growth = (trailingPE / forwardPE - 1) * 100
             eps_growth = None
-            trailing_pe = info.get('trailingPE')
-            forward_pe = info.get('forwardPE')
+            try:
+                trailing_pe = info.get('trailingPE')
+                forward_pe = info.get('forwardPE')
+                
+                # Convert to float - yfinance sometimes returns strings
+                if trailing_pe is not None:
+                    trailing_pe = float(trailing_pe)
+                if forward_pe is not None:
+                    forward_pe = float(forward_pe)
+                
+                if trailing_pe and forward_pe and forward_pe > 0 and trailing_pe > 0:
+                    # Forward PE < Trailing PE means growth expected
+                    eps_growth = ((trailing_pe / forward_pe) - 1) * 100
+            except (ValueError, TypeError):
+                pass  # Invalid PE data
             
-            if trailing_pe and forward_pe and forward_pe > 0 and trailing_pe > 0:
-                # Forward PE < Trailing PE means growth expected
-                eps_growth = ((trailing_pe / forward_pe) - 1) * 100
-            else:
+            if eps_growth is None:
                 # Fallback to historical earningsGrowth if PE not available
-                hist_growth = info.get('earningsGrowth')
-                if hist_growth is not None:
-                    eps_growth = hist_growth * 100
+                try:
+                    hist_growth = info.get('earningsGrowth')
+                    if hist_growth is not None:
+                        eps_growth = float(hist_growth) * 100
+                except (ValueError, TypeError):
+                    pass
             
-            rev_growth = info.get('revenueGrowth')
-            if rev_growth is not None:
-                rev_growth = rev_growth * 100  # Convert to percentage
+            rev_growth = None
+            try:
+                rev_val = info.get('revenueGrowth')
+                if rev_val is not None:
+                    rev_growth = float(rev_val) * 100  # Convert to percentage
+            except (ValueError, TypeError):
+                pass
             
             # Calculate relative volume (today's vol / 10-day avg)
-            today_volume = info.get('volume', 0)
-            avg_volume_10d = info.get('averageVolume10days') or info.get('averageVolume', 0)
             relative_volume = None
-            if today_volume and avg_volume_10d and avg_volume_10d > 0:
-                relative_volume = today_volume / avg_volume_10d
+            today_volume = 0
+            try:
+                today_volume = float(info.get('volume', 0) or 0)
+                avg_volume_10d = float(info.get('averageVolume10days') or info.get('averageVolume', 0) or 0)
+                if today_volume > 0 and avg_volume_10d > 0:
+                    relative_volume = today_volume / avg_volume_10d
+            except (ValueError, TypeError):
+                pass
             
             # Check for stale/delisted stocks (no recent price data)
             current_price = indicators.get('price', 0)
@@ -358,6 +389,10 @@ class BaseScanner:
                 dmi_bullish=indicators.get('dmi_bullish', False),
                 adx_strong=indicators.get('adx_strong', False),
                 adx_value=indicators.get('adx_value', 0),
+                prsi_fast_bullish=indicators.get('prsi_fast_bullish', True),
+                prsi_momentum_warning=indicators.get('prsi_momentum_warning', False),
+                atr_volatility=indicators.get('atr_volatility', 0),
+                is_broken=indicators.get('is_broken', False),
                 macd_bullish=indicators.get('macd_bullish', False),
                 williams_r=indicators.get('williams_r', -50),
                 

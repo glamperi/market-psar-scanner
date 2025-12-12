@@ -172,7 +172,8 @@ def classify_zone_v2(
     rsi: float = 50,
     atr_percent: float = 0,
     trend_score: int = 50,
-    timing_score: int = 50
+    timing_score: int = 50,
+    is_broken: bool = False
 ) -> ZoneResult:
     """
     V2 zone classification (PRSI primary).
@@ -187,6 +188,7 @@ def classify_zone_v2(
         atr_percent: ATR% (overbought/oversold)
         trend_score: Trend score 0-100
         timing_score: Timing score 0-100
+        is_broken: True if stock recently broke DOWN through PSAR (was bullish, now bearish)
     
     Returns:
         ZoneResult with zone, confidence, reasons, warnings
@@ -245,20 +247,31 @@ def classify_zone_v2(
             zone = Zone.BUY
             confidence = 65
     
-    # Case 2: PRSI Bullish + Price Bearish = EARLY BUY (key signal!)
+    # Case 2: PRSI Bullish + Price Bearish = EARLY BUY or BROKEN
     elif prsi_bullish and not price_psar_bullish:
-        zone = Zone.EARLY_BUY
-        reasons.append("PRSI flipped bullish ↗️")
-        reasons.append("Price still below PSAR (catching up)")
-        confidence = 70
-        
-        if obv_bullish is True:
-            reasons.append("OBV confirms accumulation 🟢")
-            confidence = 80
-        
-        if momentum <= 4:
-            reasons.append("Momentum building")
-            confidence += 5
+        # Check if this is a BROKEN signal (was bullish, crashed down)
+        if is_broken:
+            # Stock just broke DOWN through PSAR - NOT an early buy opportunity
+            zone = Zone.WARNING
+            reasons.append("⚠️ BROKEN - price crashed through PSAR")
+            reasons.append("PRSI bullish but lagging (may follow price down)")
+            confidence = 30
+            entry_allowed = False
+            warnings.append("Recent breakdown - avoid, PRSI may flip bearish")
+        else:
+            # True Early Buy - consolidating below PSAR, PRSI flipped bullish
+            zone = Zone.EARLY_BUY
+            reasons.append("PRSI flipped bullish ↗️")
+            reasons.append("Price still below PSAR (catching up)")
+            confidence = 70
+            
+            if obv_bullish is True:
+                reasons.append("OBV confirms accumulation 🟢")
+                confidence = 80
+            
+            if momentum <= 4:
+                reasons.append("Momentum building")
+                confidence += 5
     
     # Case 3: PRSI Bearish + Price Bullish = WARNING (momentum fading)
     elif not prsi_bullish and price_psar_bullish:
@@ -360,7 +373,8 @@ def classify_from_indicators(indicators: Dict) -> ZoneResult:
         rsi=indicators.get('prsi', {}).get('prsi_data', {}).get('rsi', 50),
         atr_percent=indicators.get('atr_percent', 0),
         trend_score=indicators.get('trend_score_value', 50),
-        timing_score=indicators.get('timing_score_value', 50)
+        timing_score=indicators.get('timing_score_value', 50),
+        is_broken=indicators.get('is_broken', False)
     )
 
 

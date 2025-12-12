@@ -24,8 +24,15 @@ class ShortCandidate:
     psar_gap: float  # Negative = below PSAR (good for shorts)
     psar_days_bearish: int  # Days price below PSAR
     psar_gap_slope: float = 0  # Change in gap over 3 days (negative = accelerating down)
+    
+    # PRSI-14 (standard, for reference)
     prsi_bearish: bool = False
     prsi_days_since_flip: int = 0
+    
+    # PRSI-4 (FAST - used for short signals!)
+    prsi4_bearish: bool = False  # PRIMARY signal for shorts
+    prsi4_days: int = 0  # Days since PRSI-4 flipped bearish
+    
     obv_bearish: bool = False  # Distribution = good for shorts
     dmi_bearish: bool = False  # -DI > +DI
     adx_value: float = 20
@@ -288,31 +295,40 @@ def get_ssi_display(ssi: int) -> str:
 def calculate_short_score(
     psar_gap: float,
     psar_days_bearish: int,
-    prsi_bearish: bool,
-    prsi_days_since_flip: int,
+    prsi4_bearish: bool,
+    prsi4_days: int,
     obv_bearish: bool,
     dmi_bearish: bool,
     adx_value: float,
     williams_r: float,
     atr_percent: float,
     short_percent: Optional[float] = None,
+    prsi_bearish: bool = False,  # PRSI-14 for reference
 ) -> Tuple[int, List[str], List[str]]:
     """
     Calculate short score (0-100) and return reasons/warnings.
     
+    Uses PRSI-4 (fast) as primary signal for shorts.
     Higher score = better short candidate.
     """
     score = 0
     reasons = []
     warnings = []
     
-    # PRSI Bearish (most important - leads price)
-    if prsi_bearish:
-        score += 25
-        reasons.append(f"PRSI bearish ({prsi_days_since_flip}d)")
+    # PRSI-4 Bearish (PRIMARY - fast signal for shorts)
+    if prsi4_bearish:
+        if prsi4_days <= 4:
+            score += 30  # Fresh PRSI-4 flip = best signal
+            reasons.append(f"PRSI-4 bearish ↘️ ({prsi4_days}d) - FRESH")
+        elif prsi4_days <= 10:
+            score += 20
+            reasons.append(f"PRSI-4 bearish ↘️ ({prsi4_days}d)")
+        else:
+            score += 10  # Old signal
+            warnings.append(f"PRSI-4 bearish {prsi4_days}d - move may be exhausted")
     else:
-        score -= 30
-        warnings.append("PRSI bullish - NOT a short")
+        score -= 35  # Critical: PRSI-4 bullish = DO NOT SHORT
+        warnings.append("PRSI-4 bullish ↗️ - NOT a short")
     
     # Price vs PSAR
     if psar_gap < 0:
@@ -329,10 +345,10 @@ def calculate_short_score(
             score += 10
             reasons.append(f"Fresh breakdown ({psar_days_bearish}d)")
     else:
-        # Still above PSAR
-        if prsi_bearish:
+        # Still above PSAR - early short or avoid
+        if prsi4_bearish and prsi4_days <= 4:
             score += 5  # Early short potential
-            warnings.append(f"Price still above PSAR (+{psar_gap:.1f}%)")
+            reasons.append(f"Early short - PRSI-4 turned, price above PSAR (+{psar_gap:.1f}%)")
         else:
             score -= 20
             warnings.append("Above PSAR - avoid")
@@ -340,9 +356,9 @@ def calculate_short_score(
     # OBV Distribution
     if obv_bearish:
         score += 15
-        reasons.append("OBV distribution")
+        reasons.append("OBV distribution 🔴")
     else:
-        warnings.append("OBV accumulation")
+        warnings.append("OBV accumulation 🟢")
     
     # DMI Bearish
     if dmi_bearish:
@@ -391,36 +407,45 @@ def calculate_short_score(
     return score, reasons, warnings
 
 
-def categorize_short(score: int, prsi_bearish: bool, psar_gap: float, psar_days: int, williams_r: float = -50) -> str:
+def categorize_short(score: int, prsi4_bearish: bool, prsi4_days: int, psar_gap: float, psar_days: int, williams_r: float = -50) -> str:
     """
-    Categorize short candidate based on score and signals.
+    Categorize short candidate based on score and PRSI-4 signals.
     
-    STRICT criteria to avoid too many false positives:
-    - PRIME_SHORT: High score, confirmed breakdown, overbought
-    - SHORT_CANDIDATE: Good score, below PSAR
-    - NOT_READY: PRSI bearish but waiting for confirmation
-    - AVOID: Everything else
+    V2 LOGIC: Uses PRSI-4 (fast) for shorts!
+    
+    STRICT criteria to avoid false positives:
+    - PRIME_SHORT: PRSI-4 bearish ≤4 days + Price < PSAR + High score
+    - SHORT_CANDIDATE: PRSI-4 bearish + Price < PSAR + Good score  
+    - NOT_READY: PRSI-4 bearish but price still above PSAR (early short)
+    - AVOID: PRSI-4 bullish or exhausted (>10 days)
     """
-    if not prsi_bearish:
+    # Hard filter: PRSI-4 must be bearish
+    if not prsi4_bearish:
         return "AVOID"
     
-    # PRIME_SHORT: Must be high conviction
-    # - Score >= 70
+    # Hard filter: PRSI-4 bearish > 10 days = move exhausted
+    if prsi4_days > 10:
+        return "AVOID"
+    
+    # PRIME_SHORT: Fresh PRSI-4 + confirmed breakdown
+    # - PRSI-4 bearish ≤4 days (fresh!)
     # - Price below PSAR (confirmed breakdown)
-    # - Fresh signal (≤3 days)
-    # - Williams %R not oversold (> -70 means not bouncing yet)
-    if score >= 70 and psar_gap < 0 and psar_days <= 3 and williams_r > -70:
+    # - Score >= 65
+    # - Williams %R not oversold (> -70)
+    if prsi4_days <= 4 and psar_gap < 0 and score >= 65 and williams_r > -70:
         return "PRIME_SHORT"
     
-    # SHORT_CANDIDATE: Good setup but less urgent
-    # - Score >= 60
+    # SHORT_CANDIDATE: Good setup
+    # - PRSI-4 bearish
     # - Price below PSAR
+    # - Score >= 55
     # - Not deeply oversold
-    elif score >= 60 and psar_gap < 0 and williams_r > -80:
+    elif psar_gap < 0 and score >= 55 and williams_r > -80:
         return "SHORT_CANDIDATE"
     
-    # NOT_READY: PRSI bearish but price still above PSAR or oversold
-    elif score >= 45 and prsi_bearish:
+    # NOT_READY: PRSI-4 bearish but waiting for price breakdown
+    # This is the "early short" signal
+    elif score >= 40 and prsi4_bearish:
         return "NOT_READY"
     
     else:
@@ -554,28 +579,39 @@ def analyze_short_candidate(
     williams_r: float,
     atr_percent: float,
     psar_gap_slope: float = 0,
+    prsi4_bearish: bool = None,  # PRSI-4 fast signal
+    prsi4_days: int = 0,
     info: dict = None,
     fetch_options: bool = True
 ) -> ShortCandidate:
     """
     Analyze a stock as a short candidate.
+    
+    V2: Uses PRSI-4 (fast) as primary signal for shorts!
+    Falls back to PRSI-14 if PRSI-4 not provided.
     """
+    # Use PRSI-4 if provided, otherwise fall back to PRSI-14
+    if prsi4_bearish is None:
+        prsi4_bearish = prsi_bearish
+        prsi4_days = prsi_days_since_flip
+    
     # Get short interest
     short_percent, days_to_cover = get_short_interest(ticker, info)
     squeeze_risk, _ = get_squeeze_risk(short_percent)
     
-    # Calculate short score (for categorization)
+    # Calculate short score using PRSI-4
     score, reasons, warnings = calculate_short_score(
         psar_gap=psar_gap,
         psar_days_bearish=psar_days_bearish,
-        prsi_bearish=prsi_bearish,
-        prsi_days_since_flip=prsi_days_since_flip,
+        prsi4_bearish=prsi4_bearish,
+        prsi4_days=prsi4_days,
         obv_bearish=obv_bearish,
         dmi_bearish=dmi_bearish,
         adx_value=adx_value,
         williams_r=williams_r,
         atr_percent=atr_percent,
         short_percent=short_percent,
+        prsi_bearish=prsi_bearish,
     )
     
     # Calculate SSI (Smart Short Indicator)
@@ -589,8 +625,8 @@ def analyze_short_candidate(
         williams_r=williams_r
     )
     
-    # Categorize - pass williams_r for oversold check
-    category = categorize_short(score, prsi_bearish, psar_gap, psar_days_bearish, williams_r)
+    # Categorize using PRSI-4
+    category = categorize_short(score, prsi4_bearish, prsi4_days, psar_gap, psar_days_bearish, williams_r)
     
     candidate = ShortCandidate(
         ticker=ticker,
@@ -600,6 +636,8 @@ def analyze_short_candidate(
         psar_gap_slope=psar_gap_slope,
         prsi_bearish=prsi_bearish,
         prsi_days_since_flip=prsi_days_since_flip,
+        prsi4_bearish=prsi4_bearish,
+        prsi4_days=prsi4_days,
         obv_bearish=obv_bearish,
         dmi_bearish=dmi_bearish,
         adx_value=adx_value,
@@ -641,14 +679,19 @@ def build_shorts_html_section(candidates: List[ShortCandidate], title: str, sect
     <table>
         <tr style='background-color:{section_class}; color:white;'>
             <th>Ticker</th><th>Price</th><th>PSAR%</th><th>Days</th><th>SSI</th>
-            <th>PRSI</th><th>OBV</th><th>DMI</th><th>ADX</th><th>Will%R</th><th>ATR%</th>
+            <th>PRSI-4</th><th>P4 Days</th><th>OBV</th><th>DMI</th><th>ADX</th><th>Will%R</th><th>ATR%</th>
             <th>SI%</th><th>Squeeze</th>
             <th>Buy Put</th><th>Sell Put</th><th>Exp</th><th>Cost</th><th>Links</th>
         </tr>
     """
     
     for c in candidates:
-        prsi_icon = "↘️" if c.prsi_bearish else "↗️"
+        # Use PRSI-4 for icon (fast signal for shorts)
+        prsi4_icon = "↘️" if c.prsi4_bearish else "↗️"
+        prsi4_days_display = f"{c.prsi4_days}d"
+        if c.prsi4_bearish and c.prsi4_days <= 4:
+            prsi4_days_display = f"<span style='color:#c0392b; font-weight:bold;'>{c.prsi4_days}d</span>"
+        
         obv_icon = "🔴" if c.obv_bearish else "🟢"
         dmi_icon = "✓" if c.dmi_bearish else "✗"
         
@@ -714,7 +757,8 @@ def build_shorts_html_section(candidates: List[ShortCandidate], title: str, sect
             <td style='color:{"#e74c3c" if c.psar_gap < 0 else "#27ae60"};'>{c.psar_gap:+.1f}%</td>
             <td>{c.psar_days_bearish}</td>
             <td>{ssi_display}</td>
-            <td>{prsi_icon}</td>
+            <td>{prsi4_icon}</td>
+            <td>{prsi4_days_display}</td>
             <td>{obv_icon}</td>
             <td>{dmi_icon}</td>
             <td>{c.adx_value:.0f}</td>
@@ -821,11 +865,11 @@ def build_shorts_report_html(
     # Legend
     html += """
     <div style='font-size:10px; color:#666; margin-top:20px; padding:10px; background:#f9f9f9;'>
-        <strong>Legend:</strong><br>
+        <strong>Legend - V2 Short Logic (uses PRSI-4 fast signal):</strong><br>
+        <strong>PRSI-4:</strong> ↘️ Bearish (good for shorts) | ↗️ Bullish (avoid) | <span style='color:#c0392b; font-weight:bold;'>P4 Days ≤4 = Fresh signal</span><br>
         <strong>SSI (Smart Short Indicator):</strong> 0-10 | Days 1-5: 30% Gap + 25% OBV + 25% Will%R + 20% ATR | Days 6+: 30% Slope + 25% ADX + 25% OBV + 20% ATR<br>
         &nbsp;&nbsp;&nbsp;<span style='color:#c0392b'>9-10 = Prime</span> | <span style='color:#e74c3c'>8 = Good</span> | <span style='color:#f39c12'>6-7 = OK</span> | <span style='color:#95a5a6'>4-5 = Weak</span> | <span style='color:#27ae60'>0-3 = Avoid</span><br>
-        PRSI: ↘️ Bearish | OBV: 🔴 Distribution (good) 🟢 Accumulation (bad)<br>
-        Squeeze Risk: 🟢 Low (<15% SI) 🟡 Moderate (15-25%) 🔴 High (>25%)<br>
+        OBV: 🔴 Distribution (good) 🟢 Accumulation (bad) | Squeeze Risk: 🟢 Low (<15% SI) 🟡 Moderate (15-25%) 🔴 High (>25%)<br>
         Will%R: Red = Overbought (good entry) | Green = Oversold (bounce risk)<br>
         <strong>Links:</strong> 📊 Optionstrat | 📈 Fidelity Buy Put | 📉 Fidelity Sell Put<br>
         <strong>Put Spread Strategy:</strong> Buy higher strike put, sell lower strike put. Max loss = spread cost. Max profit = strike diff - cost.
@@ -904,11 +948,11 @@ def build_shorts_watchlist_html(
     # Legend
     html += """
     <div style='font-size:10px; color:#666; margin-top:20px; padding:10px; background:#f9f9f9;'>
-        <strong>Legend:</strong><br>
+        <strong>Legend - V2 Short Logic (uses PRSI-4 fast signal):</strong><br>
+        <strong>PRSI-4:</strong> ↘️ Bearish (good for shorts) | ↗️ Bullish (avoid) | <span style='color:#c0392b; font-weight:bold;'>P4 Days ≤4 = Fresh signal</span><br>
         <strong>SSI (Smart Short Indicator):</strong> 0-10 | Days 1-5: 30% Gap + 25% OBV + 25% Will%R + 20% ATR | Days 6+: 30% Slope + 25% ADX + 25% OBV + 20% ATR<br>
         &nbsp;&nbsp;&nbsp;<span style='color:#c0392b'>9-10 = Prime</span> | <span style='color:#e74c3c'>8 = Good</span> | <span style='color:#f39c12'>6-7 = OK</span> | <span style='color:#95a5a6'>4-5 = Weak</span> | <span style='color:#27ae60'>0-3 = Avoid</span><br>
-        PRSI: ↘️ Bearish (good) ↗️ Bullish (bad) | OBV: 🔴 Distribution (good) 🟢 Accumulation (bad)<br>
-        Squeeze Risk: 🟢 Low (<15% SI) 🟡 Moderate (15-25%) 🔴 High (>25%)<br>
+        OBV: 🔴 Distribution (good) 🟢 Accumulation (bad) | Squeeze Risk: 🟢 Low (<15% SI) 🟡 Moderate (15-25%) 🔴 High (>25%)<br>
         Will%R: Red = Overbought (good entry) | Green = Oversold (bounce risk)<br>
         <strong>Links:</strong> 📊 Optionstrat | 📈 Fidelity Buy Put | 📉 Fidelity Sell Put<br>
         <strong>Put Spread Strategy:</strong> Buy higher strike put, sell lower strike put. Max loss = spread cost. Max profit = strike diff - cost.

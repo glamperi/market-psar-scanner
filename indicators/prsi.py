@@ -190,40 +190,48 @@ def calculate_prsi(df: pd.DataFrame, rsi_period: int = None, af: float = None) -
     Calculate PRSI (PSAR applied to RSI).
     
     This is the PRIMARY SIGNAL in v2.
+    Now also calculates PRSI_FAST (4-day) for early exit warnings.
     
     Args:
         df: DataFrame with OHLC data
-        rsi_period: RSI calculation period
+        rsi_period: RSI calculation period (default 14)
         af: PSAR acceleration factor
     
     Returns:
         Dict with:
-        - rsi: current RSI value
-        - prsi_psar: current PSAR value on RSI
+        - rsi: current RSI(14) value
+        - prsi_psar: current PSAR value on RSI(14)
         - is_bullish: True if RSI > PRSI PSAR
         - trend_direction: 'up' or 'down'
         - days_since_flip: days since last trend change
-        - rsi_series: full RSI series
+        - rsi_series: full RSI(14) series
         - prsi_series: full PSAR-on-RSI series
         - trend_series: full trend series (1/-1)
+        
+        FAST indicators (RSI 4-day for early exit detection):
+        - rsi_fast: current RSI(4) value
+        - prsi_fast_psar: current PSAR on RSI(4)
+        - is_bullish_fast: True if RSI(4) > PRSI_FAST PSAR
+        - days_since_flip_fast: days since fast PRSI flipped
+        - momentum_warning: True if PRSI(14) bullish but PRSI(4) bearish
     """
     if len(df) < 20:
         return None
     
-    # Calculate RSI
+    # Calculate RSI(14) - standard for entries
     rsi = calculate_rsi(df, rsi_period)
     
-    # Calculate PSAR on RSI
+    # Calculate PSAR on RSI(14)
     prsi_psar, trend = calculate_psar_on_series(rsi, af)
     
-    # Current values
+    # Current values for RSI(14)
     current_rsi = rsi.iloc[-1]
     current_prsi = prsi_psar.iloc[-1]
     current_trend = trend.iloc[-1]
     
     is_bullish = current_trend == 1
     
-    # Count days since last flip
+    # Count days since last flip for RSI(14)
     days_since_flip = 1
     for i in range(len(trend) - 2, -1, -1):
         if trend.iloc[i] == current_trend:
@@ -231,7 +239,29 @@ def calculate_prsi(df: pd.DataFrame, rsi_period: int = None, af: float = None) -
         else:
             break
     
+    # === FAST PRSI (RSI 4-day) for early exit detection ===
+    rsi_fast = calculate_rsi(df, period=4)
+    prsi_fast_psar, trend_fast = calculate_psar_on_series(rsi_fast, af)
+    
+    current_rsi_fast = rsi_fast.iloc[-1]
+    current_prsi_fast = prsi_fast_psar.iloc[-1]
+    current_trend_fast = trend_fast.iloc[-1]
+    
+    is_bullish_fast = current_trend_fast == 1
+    
+    # Count days since last flip for RSI(4)
+    days_since_flip_fast = 1
+    for i in range(len(trend_fast) - 2, -1, -1):
+        if trend_fast.iloc[i] == current_trend_fast:
+            days_since_flip_fast += 1
+        else:
+            break
+    
+    # Momentum warning: PRSI(14) bullish but PRSI(4) bearish = early reversal signal
+    momentum_warning = is_bullish and not is_bullish_fast
+    
     return {
+        # Standard PRSI (14-day)
         'rsi': current_rsi,
         'prsi_psar': current_prsi,
         'is_bullish': is_bullish,
@@ -239,7 +269,19 @@ def calculate_prsi(df: pd.DataFrame, rsi_period: int = None, af: float = None) -
         'days_since_flip': days_since_flip,
         'rsi_series': rsi,
         'prsi_series': prsi_psar,
-        'trend_series': trend
+        'trend_series': trend,
+        
+        # Fast PRSI (4-day) for exit warnings
+        'rsi_fast': current_rsi_fast,
+        'prsi_fast_psar': current_prsi_fast,
+        'is_bullish_fast': is_bullish_fast,
+        'days_since_flip_fast': days_since_flip_fast,
+        'rsi_fast_series': rsi_fast,
+        'prsi_fast_series': prsi_fast_psar,
+        'trend_fast_series': trend_fast,
+        
+        # Warning flag
+        'momentum_warning': momentum_warning
     }
 
 

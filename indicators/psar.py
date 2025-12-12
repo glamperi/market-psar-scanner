@@ -252,6 +252,8 @@ def get_psar_data(df: pd.DataFrame) -> Dict[str, any]:
         - entry_risk: v2 risk assessment
         - days_in_trend: consecutive days in current trend
         - gap_slope: change in gap over 3 days (positive = widening)
+        - cross_direction: 'up' (bullish cross), 'down' (bearish cross/breakdown), or None
+        - is_broken: True if recently crossed DOWN (was bullish, now bearish)
     """
     if len(df) < 10:
         return None
@@ -273,15 +275,39 @@ def get_psar_data(df: pd.DataFrame) -> Dict[str, any]:
         else:
             break
     
-    # Calculate gap slope (3-day lookback)
-    # Positive = gap widening (bullish for longs)
-    # Negative = gap narrowing (trend weakening)
+    # Detect cross direction (what direction did price cross PSAR?)
+    cross_direction = None
+    is_broken = False
+    
+    if days_in_trend <= 5:  # Recent cross (within 5 days)
+        # Look at the day before the cross
+        cross_idx = len(df) - days_in_trend - 1
+        if cross_idx >= 0:
+            prev_price = df['Close'].iloc[cross_idx]
+            prev_psar = psar_series.iloc[cross_idx]
+            prev_trend = get_psar_trend(prev_price, prev_psar)
+            
+            if trend == 'bullish' and prev_trend == 'bearish':
+                cross_direction = 'up'  # Bullish cross - price broke UP through PSAR
+            elif trend == 'bearish' and prev_trend == 'bullish':
+                cross_direction = 'down'  # Bearish cross - price broke DOWN through PSAR
+                is_broken = True  # This is a BREAKDOWN, not consolidation
+    
+    # Calculate gap slope (only using data SINCE the cross)
+    # Day 1: slope = 0 (no prior data in this trend)
+    # Day 2: slope = today_gap - day1_gap
+    # Day 3+: slope = today_gap - gap_N_days_ago (where N = min(3, days_in_trend-1))
     gap_slope = 0.0
-    if len(df) >= 4 and len(psar_series) >= 4:
-        price_3d_ago = df['Close'].iloc[-4]
-        psar_3d_ago = psar_series.iloc[-4]
-        gap_3d_ago = calculate_psar_gap(price_3d_ago, psar_3d_ago)
-        gap_slope = gap_percent - gap_3d_ago
+    
+    if days_in_trend >= 2 and len(df) >= 2 and len(psar_series) >= 2:
+        # How many days back can we look within this trend?
+        lookback = min(3, days_in_trend - 1)
+        
+        if lookback >= 1:
+            price_lookback = df['Close'].iloc[-(lookback + 1)]
+            psar_lookback = psar_series.iloc[-(lookback + 1)]
+            gap_lookback = calculate_psar_gap(price_lookback, psar_lookback)
+            gap_slope = gap_percent - gap_lookback
     
     return {
         'psar': current_psar,
@@ -292,6 +318,8 @@ def get_psar_data(df: pd.DataFrame) -> Dict[str, any]:
         'entry_risk': get_entry_risk(gap_percent),
         'days_in_trend': days_in_trend,
         'gap_slope': gap_slope,
+        'cross_direction': cross_direction,  # 'up' or 'down' or None
+        'is_broken': is_broken,  # True if recently broke DOWN through PSAR
         'psar_series': psar_series  # Full series for charting
     }
 

@@ -175,18 +175,27 @@ def get_atr_data(df: pd.DataFrame) -> Dict[str, any]:
         df: DataFrame with OHLC data
     
     Returns:
-        Dict with complete ATR data
+        Dict with complete ATR data including:
+        - atr: raw ATR value in dollars
+        - atr_percent: distance from EMA as % (overbought/oversold indicator)
+        - atr_volatility: ATR as % of price (true volatility measure, always positive)
     """
     if len(df) < 20:
-        return {'error': 'Insufficient data', 'atr_percent': 0, 'status': None}
+        return {'error': 'Insufficient data', 'atr_percent': 0, 'atr_volatility': 0, 'status': None}
     
     atr = calculate_atr(df)
     atr_percent = calculate_atr_percent(df)
     status = get_atr_status(atr_percent)
     
+    # Calculate true volatility: ATR as % of price (always positive)
+    current_price = df['Close'].iloc[-1]
+    current_atr = atr.iloc[-1]
+    atr_volatility = (current_atr / current_price) * 100 if current_price > 0 else 0
+    
     return {
-        'atr': atr.iloc[-1],
-        'atr_percent': atr_percent,
+        'atr': current_atr,
+        'atr_percent': atr_percent,  # Distance from EMA (can be negative)
+        'atr_volatility': atr_volatility,  # True volatility (always positive)
         'status': status['status'],
         'emoji': status['emoji'],
         'description': status['description'],

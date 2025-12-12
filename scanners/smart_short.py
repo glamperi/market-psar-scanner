@@ -1,26 +1,32 @@
 """
-Smart Short Scanner
-===================
-Scanner for finding short entry opportunities using V2 logic.
+Smart Short Scanner V2
+======================
+Scanner for finding short entry opportunities using PRSI-4 as fast confirmation.
 
-Smart Short Criteria (FIXED from V1):
-- Price < 50-Day MA (downtrend)
-- RSI between 40-60 (recovered from crash, NOT capitulating)
-- Price rallying toward resistance (bounce to short)
-- PRSI is Bearish (↘️) or just flipped
-- HARD RULE: NEVER short if RSI < 35 (capitulation zone)
+V2 SHORT LOGIC:
+- Lead with Price < PSAR (breakdown confirmed)
+- Confirm with PRSI-4 bearish (fast 4-day RSI momentum)
 
-Key Fix from V1:
-V1 Error: Shorting deep negative PSAR (-9%, -12%) = shorting into support
-V2 Fix: Short SMALL negative PSAR that is rolling over = shorting resistance
+Why PRSI-4 for Shorts:
+- Shorts move FAST - need faster signal than 14-day
+- PRSI-14 is too slow for short entries
+- PRSI-4 catches momentum shifts quickly
+- Avoids shorting into oversold bounces
 
-The best short is NOT when a stock has already crashed,
-but when it bounces back toward resistance and fails.
+Categories:
+- 🔴🔴 Strong Short: Price < PSAR + PRSI-4 bearish ≤4 days (fresh)
+- 🔴 Short: Price < PSAR + PRSI-4 bearish >4 days (confirmed)
+- ⚡ Early Short: Price > PSAR + PRSI-4 bearish ≤4 days (anticipating)
+
+HARD FILTERS (never short):
+- RSI-14 < 30 (oversold, bounce risk)
+- PRSI-4 bearish > 10 days (move exhausted)
+- OBV green (accumulation = buying pressure)
 """
 
 import pandas as pd
 from typing import List, Optional, Dict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 try:
     from .base_scanner import (
@@ -29,42 +35,44 @@ try:
     )
     from utils.config import (
         DATA_FILES_DIR,
-        RSI_SMART_SHORT_MIN, RSI_SMART_SHORT_MAX, RSI_NO_SHORT_BELOW,
-        GAP_EXCELLENT, GAP_MAX,
-        TREND_SCORE_MIN
+        RSI_NO_SHORT_BELOW,
     )
 except ImportError:
     from base_scanner import BaseScanner, ScanResult, ScanSummary, load_ticker_file, format_scan_result_row
     DATA_FILES_DIR = 'data_files'
-    RSI_SMART_SHORT_MIN = 40
-    RSI_SMART_SHORT_MAX = 60
-    RSI_NO_SHORT_BELOW = 35
-    GAP_EXCELLENT = 3.0
-    GAP_MAX = 5.0
-    TREND_SCORE_MIN = 50
+    RSI_NO_SHORT_BELOW = 30
+
+
+# Short-specific config
+PRSI4_MAX_DAYS = 10  # Don't short if PRSI-4 bearish > 10 days (exhausted)
+PRSI4_FRESH_DAYS = 4  # Fresh signal threshold
 
 
 @dataclass
 class ShortCandidate:
     """Enhanced result for short candidates."""
     result: ScanResult
-    short_score: int  # 0-100 short quality score
-    short_reasons: List[str]
-    short_warnings: List[str]
-    is_valid_short: bool
+    category: str  # 'strong_short', 'short', 'early_short', 'invalid'
+    short_score: int  # 0-100 quality score
+    prsi4_bearish: bool
+    prsi4_days: int
+    reasons: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
     invalid_reason: Optional[str] = None
 
 
 class SmartShortScanner(BaseScanner):
     """
-    Scanner optimized for finding smart short entries.
+    Scanner for finding smart short entries using PRSI-4.
     
-    CRITICAL RULES:
-    1. NEVER short RSI < 35 (oversold/capitulation)
-    2. NEVER short deep negative PSAR (already crashed)
-    3. Look for bounces to resistance that fail
-    4. Require PRSI bearish confirmation
-    5. OBV red (distribution) is ideal
+    V2 LOGIC:
+    1. Lead with Price < PSAR (confirmed breakdown)
+    2. Confirm with PRSI-4 bearish (fast momentum)
+    
+    NEVER short:
+    - RSI-14 < 30 (oversold bounce risk)
+    - PRSI-4 bearish > 10 days (exhausted)
+    - OBV green (accumulation)
     """
     
     def __init__(
@@ -133,132 +141,148 @@ class SmartShortScanner(BaseScanner):
     
     def evaluate_short(self, result: ScanResult) -> ShortCandidate:
         """
-        Evaluate a stock as a short candidate.
-        
-        This is the FIXED logic that addresses V1 problems.
+        Evaluate a stock as a short candidate using V2 PRSI-4 logic.
         
         Returns:
-            ShortCandidate with evaluation
+            ShortCandidate with category and evaluation
         """
-        short_score = 50  # Start neutral
         reasons = []
         warnings = []
-        is_valid = True
-        invalid_reason = None
+        short_score = 50  # Start neutral
         
-        # Get RSI from indicators
+        # Get PRSI data
         prsi_data = result.indicators.get('prsi', {}).get('prsi_data', {})
-        rsi = prsi_data.get('rsi', 50)
+        rsi_14 = prsi_data.get('rsi', 50)
+        prsi4_bearish = not prsi_data.get('is_bullish_fast', True)  # Inverted: not bullish = bearish
+        prsi4_days = prsi_data.get('days_since_flip_fast', 0)
+        
+        # Price vs PSAR
+        price_below_psar = result.psar_gap < 0
         
         # =================================================================
-        # HARD BLOCKS - These invalidate the short
+        # HARD BLOCKS - Never short these
         # =================================================================
         
-        # RULE 1: NEVER short if RSI < 35
-        if rsi < RSI_NO_SHORT_BELOW:
-            is_valid = False
-            invalid_reason = f"RSI {rsi:.0f} < 35 - NEVER short oversold/capitulation"
+        # RULE 1: Never short RSI-14 < 30 (oversold bounce risk)
+        if rsi_14 < RSI_NO_SHORT_BELOW:
             return ShortCandidate(
                 result=result,
+                category='invalid',
                 short_score=0,
-                short_reasons=[],
-                short_warnings=[invalid_reason],
-                is_valid_short=False,
-                invalid_reason=invalid_reason
+                prsi4_bearish=prsi4_bearish,
+                prsi4_days=prsi4_days,
+                warnings=[f"RSI-14 = {rsi_14:.0f} < 30 - OVERSOLD, bounce risk"],
+                invalid_reason=f"RSI {rsi_14:.0f} oversold - never short"
             )
         
-        # RULE 2: NEVER short deep negative PSAR (already crashed)
-        if result.psar_gap < -8:
-            is_valid = False
-            invalid_reason = f"PSAR gap {result.psar_gap:.1f}% too negative - already crashed"
+        # RULE 2: Never short if PRSI-4 bearish > 10 days (exhausted move)
+        if prsi4_bearish and prsi4_days > PRSI4_MAX_DAYS:
             return ShortCandidate(
                 result=result,
+                category='invalid',
                 short_score=0,
-                short_reasons=[],
-                short_warnings=[invalid_reason],
-                is_valid_short=False,
-                invalid_reason=invalid_reason
+                prsi4_bearish=prsi4_bearish,
+                prsi4_days=prsi4_days,
+                warnings=[f"PRSI-4 bearish {prsi4_days}d > 10d - move exhausted"],
+                invalid_reason=f"PRSI-4 bearish {prsi4_days}d - too late"
             )
         
-        # RULE 3: Don't short if OBV is green (accumulation)
+        # RULE 3: Don't short if PRSI-4 is bullish (momentum turning up)
+        if not prsi4_bearish:
+            return ShortCandidate(
+                result=result,
+                category='invalid',
+                short_score=0,
+                prsi4_bearish=prsi4_bearish,
+                prsi4_days=prsi4_days,
+                warnings=["PRSI-4 bullish ↗️ - momentum turning up"],
+                invalid_reason="PRSI-4 bullish - wrong direction"
+            )
+        
+        # RULE 4: Warning if OBV green (accumulation = buying pressure)
         if result.obv_bullish is True:
-            warnings.append("OBV green - accumulation detected, risky short")
-            short_score -= 20
-        
-        # =================================================================
-        # SCORING - What makes a GOOD short
-        # =================================================================
-        
-        # PRSI bearish is essential
-        if not result.prsi_bullish:
-            reasons.append("PRSI bearish ↘️")
-            short_score += 15
-        else:
-            warnings.append("PRSI still bullish - wait for flip")
+            warnings.append("OBV green 🟢 - accumulation detected")
             short_score -= 15
         
-        # OBV distribution (red) is ideal
-        if result.obv_bullish is False:
-            reasons.append("OBV shows distribution 🔴")
-            short_score += 15
+        # =================================================================
+        # CATEGORIZATION based on V2 Logic
+        # =================================================================
         
-        # RSI in ideal short zone (40-60, recovered but not strong)
-        if RSI_SMART_SHORT_MIN <= rsi <= RSI_SMART_SHORT_MAX:
-            reasons.append(f"RSI {rsi:.0f} in ideal short zone")
-            short_score += 10
-        elif rsi > RSI_SMART_SHORT_MAX:
-            warnings.append(f"RSI {rsi:.0f} still strong - may have more upside")
-            short_score -= 10
+        # PRSI-4 is bearish (passed filters above)
+        reasons.append(f"PRSI-4 bearish ↘️ ({prsi4_days}d)")
         
-        # Small negative PSAR is better than deep negative
-        if -5 < result.psar_gap < 0:
-            reasons.append(f"Small PSAR gap ({result.psar_gap:.1f}%) - good risk/reward")
-            short_score += 10
-        elif result.psar_gap >= 0:
-            # Price still above PSAR - could be early short signal
-            if not result.prsi_bullish:
-                reasons.append("Price above PSAR but PRSI bearish - early short signal")
-                short_score += 5
+        if price_below_psar:
+            # Price < PSAR = confirmed breakdown
+            reasons.append(f"Price < PSAR ({result.psar_gap:+.1f}%)")
+            
+            if prsi4_days <= PRSI4_FRESH_DAYS:
+                # 🔴🔴 STRONG SHORT: Fresh breakdown + fresh PRSI-4
+                category = 'strong_short'
+                short_score += 25
+                reasons.append("Fresh signal - optimal entry")
             else:
-                warnings.append("Price still above PSAR and PRSI bullish - too early")
-                short_score -= 10
+                # 🔴 SHORT: Confirmed but older
+                category = 'short'
+                short_score += 15
+                reasons.append("Confirmed downtrend")
+        else:
+            # Price > PSAR but PRSI-4 bearish = Early Short signal
+            if prsi4_days <= PRSI4_FRESH_DAYS:
+                # ⚡ EARLY SHORT: PRSI-4 turned, price hasn't broken yet
+                category = 'early_short'
+                short_score += 20
+                reasons.append("Early signal - anticipating breakdown")
+                reasons.append(f"Price still above PSAR ({result.psar_gap:+.1f}%)")
+            else:
+                # PRSI-4 bearish for a while but price holding = weak signal
+                category = 'short'
+                short_score += 5
+                warnings.append("PRSI-4 bearish but price holding above PSAR")
         
-        # Low trend score is good for shorts
+        # =================================================================
+        # BONUS SCORING
+        # =================================================================
+        
+        # OBV distribution (red) confirms selling
+        if result.obv_bullish is False:
+            reasons.append("OBV distribution 🔴")
+            short_score += 10
+        
+        # RSI-14 in ideal short zone (40-60 = recovered bounce, good to short)
+        if 40 <= rsi_14 <= 60:
+            reasons.append(f"RSI-14 = {rsi_14:.0f} (ideal zone)")
+            short_score += 10
+        elif rsi_14 > 60:
+            warnings.append(f"RSI-14 = {rsi_14:.0f} (still strong)")
+            short_score -= 5
+        
+        # Low trend score = weak stock = good short
         if result.trend_score < 40:
             reasons.append(f"Weak trend score ({result.trend_score})")
             short_score += 10
         elif result.trend_score > 60:
-            warnings.append(f"Strong trend score ({result.trend_score}) - risky short")
+            warnings.append(f"Strong trend ({result.trend_score})")
             short_score -= 10
         
-        # Momentum rolling over
-        if result.momentum <= 4:
-            reasons.append(f"Low momentum ({result.momentum})")
+        # Smaller PSAR gap = less risk
+        if -5 < result.psar_gap < 0:
+            reasons.append("Manageable PSAR gap")
             short_score += 5
-        elif result.momentum >= 7:
-            warnings.append(f"High momentum ({result.momentum}) - risky short")
+        elif result.psar_gap < -8:
+            warnings.append(f"Large PSAR gap ({result.psar_gap:.1f}%) = extended")
             short_score -= 10
-        
-        # ATR - slightly overbought is good for shorts (shorting the bounce)
-        if result.atr_percent > 2:
-            reasons.append(f"Extended above average (ATR +{result.atr_percent:.0f}%)")
-            short_score += 10
         
         # Clamp score
         short_score = max(0, min(100, short_score))
         
-        # Determine if valid short
-        if short_score < 40:
-            is_valid = False
-            invalid_reason = "Short score too low"
-        
         return ShortCandidate(
             result=result,
+            category=category,
             short_score=short_score,
-            short_reasons=reasons,
-            short_warnings=warnings,
-            is_valid_short=is_valid,
-            invalid_reason=invalid_reason
+            prsi4_bearish=prsi4_bearish,
+            prsi4_days=prsi4_days,
+            reasons=reasons,
+            warnings=warnings
         )
     
     def filter_result(self, result: ScanResult) -> bool:
@@ -270,84 +294,144 @@ class SmartShortScanner(BaseScanner):
         Get evaluated short candidates.
         
         Returns:
-            List of ShortCandidate sorted by short_score
+            List of ShortCandidate sorted by category then score
         """
-        summary = self.scan()
-        
-        candidates = []
-        
-        # Evaluate each result as a potential short
-        # We need to re-scan to get full results, not just summary
+        # Scan all tickers
         ticker_list = self.get_tickers()
         
-        for ticker, source in ticker_list:
+        candidates = []
+        total = len(ticker_list)
+        
+        for i, (ticker, source) in enumerate(ticker_list):
+            if self.progress_callback:
+                self.progress_callback(i + 1, total, ticker, "scanning")
+            
             result = self.scan_ticker(ticker, source)
             if result:
                 candidate = self.evaluate_short(result)
                 candidates.append(candidate)
         
-        # Sort by short score (highest first)
-        candidates.sort(key=lambda c: c.short_score, reverse=True)
+        # Sort by category priority then score
+        def sort_key(c: ShortCandidate):
+            cat_priority = {
+                'strong_short': 1,
+                'early_short': 2,
+                'short': 3,
+                'invalid': 4
+            }.get(c.category, 5)
+            return (cat_priority, -c.short_score, c.prsi4_days)
+        
+        candidates.sort(key=sort_key)
         
         return candidates
     
     def get_valid_shorts(self) -> List[ShortCandidate]:
         """Get only valid short candidates."""
         all_candidates = self.get_short_candidates()
-        return [c for c in all_candidates if c.is_valid_short]
+        return [c for c in all_candidates if c.category != 'invalid']
     
-    def get_invalid_shorts(self) -> List[ShortCandidate]:
-        """Get stocks that should NOT be shorted (with reasons)."""
+    def get_strong_shorts(self) -> List[ShortCandidate]:
+        """Get only strong short signals."""
         all_candidates = self.get_short_candidates()
-        return [c for c in all_candidates if not c.is_valid_short]
+        return [c for c in all_candidates if c.category == 'strong_short']
+    
+    def get_early_shorts(self) -> List[ShortCandidate]:
+        """Get early short signals (anticipating breakdown)."""
+        all_candidates = self.get_short_candidates()
+        return [c for c in all_candidates if c.category == 'early_short']
     
     def format_report(self, candidates: List[ShortCandidate]) -> str:
         """Format short candidates as a text report."""
         lines = []
         lines.append("=" * 80)
-        lines.append("SMART SHORT SCAN RESULTS")
+        lines.append("SMART SHORT SCANNER V2 (PRSI-4)")
         lines.append("=" * 80)
         lines.append("")
-        lines.append("CRITICAL RULES:")
-        lines.append("  • NEVER short RSI < 35 (oversold/capitulation)")
-        lines.append("  • NEVER short deep negative PSAR (already crashed)")
-        lines.append("  • Look for bounces to resistance that fail")
+        lines.append("V2 LOGIC:")
+        lines.append("  • Lead with Price < PSAR (breakdown confirmed)")
+        lines.append("  • Confirm with PRSI-4 bearish (fast momentum)")
+        lines.append("")
+        lines.append("NEVER SHORT:")
+        lines.append("  • RSI-14 < 30 (oversold bounce risk)")
+        lines.append("  • PRSI-4 bearish > 10 days (exhausted)")
+        lines.append("  • PRSI-4 bullish (momentum turning up)")
         lines.append("")
         
-        # Valid shorts
-        valid = [c for c in candidates if c.is_valid_short]
-        invalid = [c for c in candidates if not c.is_valid_short]
+        # Group by category
+        strong = [c for c in candidates if c.category == 'strong_short']
+        early = [c for c in candidates if c.category == 'early_short']
+        shorts = [c for c in candidates if c.category == 'short']
+        invalid = [c for c in candidates if c.category == 'invalid']
         
-        if valid:
+        # Strong Shorts
+        if strong:
             lines.append("=" * 80)
-            lines.append(f"✅ VALID SHORT CANDIDATES ({len(valid)})")
+            lines.append(f"🔴🔴 STRONG SHORT ({len(strong)}) - Fresh breakdown + fresh PRSI-4")
+            lines.append("-" * 80)
+            lines.append(f"{'Ticker':<8} {'Price':>9} {'PSAR%':>8} {'PRSI4':>8} {'Days':>5} {'Score':>6} {'OBV':>4}")
             lines.append("-" * 80)
             
-            for c in valid:
+            for c in strong:
                 r = c.result
-                lines.append(f"\n{r.ticker} - Short Score: {c.short_score}/100")
-                lines.append(f"  Price: ${r.price:.2f} | PSAR: {r.psar_gap:+.1f}% | PRSI: {r.prsi_emoji} | OBV: {r.obv_emoji}")
-                lines.append(f"  Reasons:")
-                for reason in c.short_reasons:
-                    lines.append(f"    ✓ {reason}")
-                if c.short_warnings:
-                    lines.append(f"  Warnings:")
-                    for warn in c.short_warnings:
-                        lines.append(f"    ⚠️ {warn}")
-        
-        if invalid:
+                prsi4_emoji = "↘️" if c.prsi4_bearish else "↗️"
+                lines.append(
+                    f"{r.ticker:<8} ${r.price:>7.2f} {r.psar_gap:>+7.1f}% "
+                    f"{prsi4_emoji:>6} {c.prsi4_days:>5}d {c.short_score:>5} {r.obv_emoji:>4}"
+                )
             lines.append("")
+        
+        # Early Shorts
+        if early:
+            lines.append("=" * 80)
+            lines.append(f"⚡ EARLY SHORT ({len(early)}) - PRSI-4 bearish, price hasn't broken yet")
+            lines.append("-" * 80)
+            lines.append(f"{'Ticker':<8} {'Price':>9} {'PSAR%':>8} {'PRSI4':>8} {'Days':>5} {'Score':>6} {'OBV':>4}")
+            lines.append("-" * 80)
+            
+            for c in early:
+                r = c.result
+                prsi4_emoji = "↘️" if c.prsi4_bearish else "↗️"
+                lines.append(
+                    f"{r.ticker:<8} ${r.price:>7.2f} {r.psar_gap:>+7.1f}% "
+                    f"{prsi4_emoji:>6} {c.prsi4_days:>5}d {c.short_score:>5} {r.obv_emoji:>4}"
+                )
+            lines.append("")
+        
+        # Regular Shorts
+        if shorts:
+            lines.append("=" * 80)
+            lines.append(f"🔴 SHORT ({len(shorts)}) - Confirmed but not as fresh")
+            lines.append("-" * 80)
+            lines.append(f"{'Ticker':<8} {'Price':>9} {'PSAR%':>8} {'PRSI4':>8} {'Days':>5} {'Score':>6} {'OBV':>4}")
+            lines.append("-" * 80)
+            
+            for c in shorts:
+                r = c.result
+                prsi4_emoji = "↘️" if c.prsi4_bearish else "↗️"
+                lines.append(
+                    f"{r.ticker:<8} ${r.price:>7.2f} {r.psar_gap:>+7.1f}% "
+                    f"{prsi4_emoji:>6} {c.prsi4_days:>5}d {c.short_score:>5} {r.obv_emoji:>4}"
+                )
+            lines.append("")
+        
+        # Invalid (DO NOT SHORT)
+        if invalid:
             lines.append("=" * 80)
             lines.append(f"🚫 DO NOT SHORT ({len(invalid)})")
             lines.append("-" * 80)
             
-            for c in invalid:
+            for c in invalid[:20]:  # Limit to 20
                 r = c.result
-                lines.append(f"\n{r.ticker} - {c.invalid_reason}")
-                lines.append(f"  Price: ${r.price:.2f} | PSAR: {r.psar_gap:+.1f}%")
-                if c.short_warnings:
-                    for warn in c.short_warnings:
-                        lines.append(f"    🚫 {warn}")
+                lines.append(f"{r.ticker:<8} - {c.invalid_reason}")
+            
+            if len(invalid) > 20:
+                lines.append(f"  ... and {len(invalid) - 20} more")
+            lines.append("")
+        
+        # Summary
+        lines.append("=" * 80)
+        lines.append(f"SUMMARY: {len(strong)} Strong | {len(early)} Early | {len(shorts)} Short | {len(invalid)} Invalid")
+        lines.append("=" * 80)
         
         return "\n".join(lines)
 
@@ -356,7 +440,7 @@ class SmartShortScanner(BaseScanner):
 # STANDALONE TESTING
 # =============================================================================
 if __name__ == "__main__":
-    print("Smart Short Scanner Test")
+    print("Smart Short Scanner V2 Test")
     print("=" * 60)
     
     def progress(current, total, ticker, status):
@@ -365,25 +449,17 @@ if __name__ == "__main__":
     # Create a test scanner with specific tickers
     class TestShortScanner(SmartShortScanner):
         def get_tickers(self):
-            # Test with stocks from the analysis
             return [
-                ("NVDA", "Test"),   # Was flagged as SELL with -6.3% PSAR
-                ("MSTR", "Test"),   # Was flagged as SELL with -9.3% PSAR (should be invalid)
-                ("META", "Test"),   # Was STRONG_BUY - probably not a short
-                ("INTC", "Test"),   # Often weak
+                ("NVDA", "Test"),
+                ("MSTR", "Test"),
+                ("META", "Test"),
+                ("INTC", "Test"),
+                ("AAPL", "Test"),
             ]
     
     scanner = TestShortScanner(progress_callback=progress)
     
-    print("\nEvaluating short candidates...")
+    print("\nEvaluating short candidates with V2 logic...")
     candidates = scanner.get_short_candidates()
     
     print(f"\n{scanner.format_report(candidates)}")
-    
-    # Summary
-    valid = [c for c in candidates if c.is_valid_short]
-    invalid = [c for c in candidates if not c.is_valid_short]
-    
-    print(f"\n{'='*60}")
-    print(f"Summary: {len(valid)} valid shorts, {len(invalid)} invalid")
-    print(f"{'='*60}")

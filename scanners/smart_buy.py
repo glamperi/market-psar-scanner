@@ -271,6 +271,7 @@ class PortfolioScanner(SmartBuyScanner):
     def __init__(
         self,
         positions_file: Optional[str] = None,
+        tickers_file: Optional[str] = None,
         **kwargs
     ):
         """
@@ -278,6 +279,7 @@ class PortfolioScanner(SmartBuyScanner):
         
         Args:
             positions_file: Path to positions file (mystocks.txt or mypositions.csv)
+            tickers_file: Override tickers file path (for backtesting integration)
         """
         # Don't scan market indexes
         kwargs['scan_sp500'] = False
@@ -286,7 +288,8 @@ class PortfolioScanner(SmartBuyScanner):
         
         super().__init__(**kwargs)
         
-        self.positions_file = positions_file or f'{DATA_FILES_DIR}/mystocks.txt'
+        # tickers_file overrides positions_file if provided
+        self.positions_file = tickers_file or positions_file or f'{DATA_FILES_DIR}/mystocks.txt'
         self.positions = self._load_positions()
     
     def _load_positions(self) -> Dict[str, Dict]:
