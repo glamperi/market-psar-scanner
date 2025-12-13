@@ -58,7 +58,62 @@ except ImportError:
         from ibd_utils import format_ibd_ticker, get_ibd_url
     except ImportError:
         format_ibd_ticker = None
-        get_ibd_url = None
+
+
+# ============================================================================
+# Portfolio Positions (for P&L display)
+# ============================================================================
+
+def load_positions(positions_file: str = None) -> dict:
+    """
+    Load portfolio positions from mypositions.csv for P&L display.
+    
+    Returns dict: {symbol: {'value': float, 'cost_basis': float, 'pnl_pct': float}}
+    """
+    import csv
+    from pathlib import Path
+    
+    # Default location
+    if positions_file is None:
+        script_dir = Path(__file__).parent
+        positions_file = script_dir / 'data_files' / 'mypositions.csv'
+    else:
+        positions_file = Path(positions_file)
+    
+    if not positions_file.exists():
+        return {}
+    
+    positions = {}
+    try:
+        with open(positions_file, 'r', encoding='utf-8-sig') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                symbol = row.get('Symbol', '').strip()
+                if not symbol:
+                    continue
+                
+                try:
+                    value = float(row.get('Value', 0) or 0)
+                    cost_basis = float(row.get('CostBasis', 0) or 0)
+                except (ValueError, TypeError):
+                    continue
+                
+                pnl_pct = ((value - cost_basis) / cost_basis * 100) if cost_basis > 0 else 0
+                
+                positions[symbol] = {
+                    'value': value,
+                    'cost_basis': cost_basis,
+                    'pnl_pct': pnl_pct
+                }
+        
+        return positions
+    except Exception as e:
+        print(f"Warning: Could not load positions: {e}")
+        return {}
+
+
+# Global positions dict (populated when --pnl is used)
+PORTFOLIO_POSITIONS = {}
 
 # Covered call analysis
 try:
@@ -430,10 +485,13 @@ def get_ticker_display(result: ScanResult) -> str:
         return result.ticker
 
 
-def build_results_table(results: List[ScanResult], zone: str, use_v2: bool = True, is_portfolio_mode: bool = False) -> str:
+def build_results_table(results: List[ScanResult], zone: str, use_v2: bool = True, is_portfolio_mode: bool = False, show_pnl: bool = False) -> str:
     """Build HTML table for a zone section."""
     if not results:
         return ""
+    
+    # Check if we have positions data for P&L
+    has_positions = show_pnl and len(PORTFOLIO_POSITIONS) > 0
     
     # Section header class mapping
     section_class = {
@@ -453,12 +511,16 @@ def build_results_table(results: List[ScanResult], zone: str, use_v2: bool = Tru
     # ATR column only for portfolio/friends mode (not dividend or early buy) OR custom tickers
     show_atr = (is_portfolio_mode and zone not in ['DIVIDEND', 'EARLY_BUY']) or zone == 'CUSTOM'
     
+    # P&L columns (Cost, P&L%) after Price - only for portfolio mode with --pnl
+    pnl_header = "<th>Cost</th><th>P&L%</th>" if has_positions else ""
+    
     # Different columns for Early Buy vs others
     if zone == 'EARLY_BUY':
         # Early Buy: show PRSI days and Williams for sorting visibility
-        header = """
+        header = f"""
             <th>Ticker</th>
             <th>Price</th>
+            {pnl_header}
             <th>PSAR%</th>
             <th>Days</th>
             <th>SBI</th>
@@ -472,9 +534,10 @@ def build_results_table(results: List[ScanResult], zone: str, use_v2: bool = Tru
         days_col = 'prsi'  # Days since PRSI flipped
     elif zone == 'DIVIDEND':
         # Dividend: include Signal and Yield columns
-        header = """
+        header = f"""
             <th>Ticker</th>
             <th>Price</th>
+            {pnl_header}
             <th>PSAR%</th>
             <th>Days</th>
             <th>SBI</th>
@@ -489,9 +552,10 @@ def build_results_table(results: List[ScanResult], zone: str, use_v2: bool = Tru
         days_col = 'psar'
     elif zone == 'CUSTOM':
         # Custom tickers: show Zone column to indicate signal status
-        header = """
+        header = f"""
             <th>Ticker</th>
             <th>Price</th>
+            {pnl_header}
             <th>Zone</th>
             <th>PSAR%</th>
             <th>Days</th>
@@ -506,9 +570,10 @@ def build_results_table(results: List[ScanResult], zone: str, use_v2: bool = Tru
         days_col = 'psar'
     elif show_atr:
         # Portfolio mode: add ATR column
-        header = """
+        header = f"""
             <th>Ticker</th>
             <th>Price</th>
+            {pnl_header}
             <th>PSAR%</th>
             <th>Days</th>
             <th>SBI</th>
@@ -522,9 +587,10 @@ def build_results_table(results: List[ScanResult], zone: str, use_v2: bool = Tru
         days_col = 'psar'
     else:
         # Strong Buy / Buy / Hold / Sell: show PSAR days
-        header = """
+        header = f"""
             <th>Ticker</th>
             <th>Price</th>
+            {pnl_header}
             <th>PSAR%</th>
             <th>Days</th>
             <th>SBI</th>
@@ -546,6 +612,44 @@ def build_results_table(results: List[ScanResult], zone: str, use_v2: bool = Tru
     for r in results:
         ticker_display = get_ticker_display(r)
         zone_color = get_zone_color(r.zone)
+        
+        # P&L cells (if positions data available)
+        if has_positions and r.ticker in PORTFOLIO_POSITIONS:
+            pos = PORTFOLIO_POSITIONS[r.ticker]
+            cost = pos['cost_basis']
+            pnl = pos['pnl_pct']
+            
+            # Format cost (abbreviated for large values)
+            if cost >= 100000:
+                cost_display = f"${cost/1000:.0f}K"
+            elif cost >= 10000:
+                cost_display = f"${cost/1000:.1f}K"
+            else:
+                cost_display = f"${cost:,.0f}"
+            
+            # Color P&L
+            if pnl < -10:
+                pnl_color = '#c0392b'  # Dark red - big loss
+                pnl_display = f"<strong>{pnl:+.1f}%</strong>"
+            elif pnl < 0:
+                pnl_color = '#e74c3c'  # Red - loss
+                pnl_display = f"{pnl:+.1f}%"
+            elif pnl > 20:
+                pnl_color = '#1e8449'  # Dark green - big gain
+                pnl_display = f"<strong>{pnl:+.1f}%</strong>"
+            elif pnl > 0:
+                pnl_color = '#27ae60'  # Green - gain
+                pnl_display = f"{pnl:+.1f}%"
+            else:
+                pnl_color = '#7f8c8d'  # Gray - flat
+                pnl_display = f"{pnl:+.1f}%"
+            
+            pnl_cells = f"<td>{cost_display}</td><td style='color:{pnl_color};'>{pnl_display}</td>"
+        elif has_positions:
+            # No position data for this ticker
+            pnl_cells = "<td>-</td><td>-</td>"
+        else:
+            pnl_cells = ""
         
         # PSAR gap color based on actual gap value
         # For BULLISH (positive gap): higher = more cushion = better
@@ -609,6 +713,7 @@ def build_results_table(results: List[ScanResult], zone: str, use_v2: bool = Tru
         <tr>
             <td><strong>{ticker_display}</strong></td>
             <td>${r.price:.2f}</td>
+            {pnl_cells}
             <td style='color:{gap_color}; font-weight:bold;'>{r.psar_gap:+.1f}%</td>
             <td>{days_display}</td>
             <td>{sbi_display}</td>
@@ -632,6 +737,7 @@ def build_results_table(results: List[ScanResult], zone: str, use_v2: bool = Tru
         <tr>
             <td><strong>{ticker_display}</strong></td>
             <td>${r.price:.2f}</td>
+            {pnl_cells}
             <td style='color:{gap_color}; font-weight:bold;'>{r.psar_gap:+.1f}%</td>
             <td>{days_display}</td>
             <td>{sbi_display}</td>
@@ -652,6 +758,7 @@ def build_results_table(results: List[ScanResult], zone: str, use_v2: bool = Tru
         <tr>
             <td><strong>{ticker_display}</strong></td>
             <td>${r.price:.2f}</td>
+            {pnl_cells}
             <td style='color:{zone_color}; font-weight:bold;'>{zone_emoji} {actual_zone}</td>
             <td style='color:{gap_color}; font-weight:bold;'>{r.psar_gap:+.1f}%</td>
             <td>{days_display}</td>
@@ -670,6 +777,7 @@ def build_results_table(results: List[ScanResult], zone: str, use_v2: bool = Tru
         <tr>
             <td><strong>{ticker_display}</strong></td>
             <td>${r.price:.2f}</td>
+            {pnl_cells}
             <td style='color:{gap_color}; font-weight:bold;'>{r.psar_gap:+.1f}%</td>
             <td>{days_display}</td>
             <td>{sbi_display}</td>
@@ -687,6 +795,7 @@ def build_results_table(results: List[ScanResult], zone: str, use_v2: bool = Tru
         <tr>
             <td><strong>{ticker_display}</strong></td>
             <td>${r.price:.2f}</td>
+            {pnl_cells}
             <td style='color:{gap_color}; font-weight:bold;'>{r.psar_gap:+.1f}%</td>
             <td>{days_display}</td>
             <td>{sbi_display}</td>
@@ -713,7 +822,8 @@ def build_email_body(
     early_buy_limit: int = 50,
     dividend_limit: int = 30,
     scan_params: dict = None,
-    custom_tickers: List[str] = None
+    custom_tickers: List[str] = None,
+    show_pnl: bool = False
 ) -> str:
     """Build complete HTML email body with actionable sections."""
     
@@ -1019,7 +1129,7 @@ def build_email_body(
         <div class='section-custom'>🔍 REQUESTED TICKERS ({len(results)} stocks)</div>
         <p style='color:#3498db; font-size:11px; margin:5px 0;'>All indicators for requested tickers. Zone shows current signal status.</p>
         """
-        html += build_results_table(results, 'CUSTOM', use_v2, True)  # Use portfolio mode to show ATR
+        html += build_results_table(results, 'CUSTOM', use_v2, True, show_pnl)  # Use portfolio mode to show ATR
     
     # STRONG BUY - Fresh confirmed signals (≤5 days since price crossed PSAR)
     if strong_buys:
@@ -1029,7 +1139,7 @@ def build_email_body(
         <div class='section-strongbuy'>🟢🟢 STRONG BUY - Fresh Signals ({len(display_strong)} stocks{f' of {len(strong_buys)}' if len(strong_buys) > len(display_strong) else ''})</div>
         <p style='color:#1e8449; font-size:11px; margin:5px 0;'>SBI ≥ 8. PRSI bullish + Price just crossed above PSAR (≤5 days) + Low ATR. Best entry quality.</p>
         """
-        html += build_results_table(display_strong, 'STRONG_BUY', use_v2, is_portfolio_mode)
+        html += build_results_table(display_strong, 'STRONG_BUY', use_v2, is_portfolio_mode, show_pnl)
     
     # OVERHEATED WATCH - Fresh signals but high ATR (potential chase)
     if overheated_watch:
@@ -1037,7 +1147,7 @@ def build_email_body(
         <div class='section-warning' style='background-color:#e67e22;'>🔥 OVERHEATED WATCH - High ATR ({len(overheated_watch)} stocks)</div>
         <p style='color:#e67e22; font-size:11px; margin:5px 0;'>Fresh signals (≤5 days) with ATR ≥5%. May be chasing - wait for pullback or use for covered calls.</p>
         """
-        html += build_results_table(overheated_watch, 'STRONG_BUY', use_v2, is_portfolio_mode)
+        html += build_results_table(overheated_watch, 'STRONG_BUY', use_v2, is_portfolio_mode, show_pnl)
     
     # BUY - Established trends (Portfolio/Friends mode only)
     if buys and is_portfolio_mode:
@@ -1045,7 +1155,7 @@ def build_email_body(
         <div class='section-buy'>🟢 BUY - Established Trends ({len(buys)} stocks)</div>
         <p style='color:#27ae60; font-size:11px; margin:5px 0;'>PRSI bullish + Price above PSAR (>5 days). Trend is confirmed but not as fresh.</p>
         """
-        html += build_results_table(buys, 'BUY', use_v2, is_portfolio_mode)
+        html += build_results_table(buys, 'BUY', use_v2, is_portfolio_mode, show_pnl)
     
     # === PORTFOLIO/FRIENDS MODE ONLY SECTIONS ===
     if mode in ['Portfolio', 'Friends']:
@@ -1055,7 +1165,7 @@ def build_email_body(
             <div class='section-hold'>⏸️ HOLD - Pullback Expected ({len(holds)} stocks)</div>
             <p style='color:#f39c12; font-size:11px; margin:5px 0;'>PRSI turned bearish but price still above PSAR. May pull back - don't add.</p>
             """
-            html += build_results_table(holds, 'HOLD', use_v2, is_portfolio_mode)
+            html += build_results_table(holds, 'HOLD', use_v2, is_portfolio_mode, show_pnl)
         
         # SELL - PRSI bearish and price below PSAR
         if sells:
@@ -1063,7 +1173,7 @@ def build_email_body(
             <div class='section-sell'>🔴 SELL - Downtrend ({len(sells)} stocks)</div>
             <p style='color:#c0392b; font-size:11px; margin:5px 0;'>PRSI bearish + Price below PSAR. Consider reducing position.</p>
             """
-            html += build_results_table(sells, 'SELL', use_v2, is_portfolio_mode)
+            html += build_results_table(sells, 'SELL', use_v2, is_portfolio_mode, show_pnl)
         
         # EARLY BUY - Speculative (last for portfolio since these are riskier)
         if early_buys:
@@ -1071,7 +1181,7 @@ def build_email_body(
             <div class='section-earlybuy'>⚡ EARLY BUY - Speculative ({len(early_buys)} stocks)</div>
             <p style='color:#2980b9; font-size:11px; margin:5px 0;'>PRSI bullish but price still below PSAR. Higher risk - waiting for confirmation.</p>
             """
-            html += build_results_table(early_buys, 'EARLY_BUY', use_v2, is_portfolio_mode)
+            html += build_results_table(early_buys, 'EARLY_BUY', use_v2, is_portfolio_mode, show_pnl)
         
         # COVERED CALL CANDIDATES - High ATR + Low ADX stocks (Portfolio/Friends only)
         # High ATR = good premium, Low ADX = choppy/less breakout risk
@@ -1125,7 +1235,7 @@ def build_email_body(
             <div class='section-earlybuy'>⚡ EARLY BUY - Speculative ({len(display_early)} stocks{f' of {len(early_buys)}' if len(early_buys) > len(display_early) else ''})</div>
             <p style='color:#2980b9; font-size:11px; margin:5px 0;'>PRSI bullish but price still below PSAR. Sorted by PRSI flip recency, then gap (closer to crossing), then Williams %R.</p>
             """
-            html += build_results_table(display_early, 'EARLY_BUY', use_v2, False)
+            html += build_results_table(display_early, 'EARLY_BUY', use_v2, False, show_pnl)
         
         # DIVIDEND BUYS - Market mode only
         if dividend_buys:
@@ -1134,11 +1244,17 @@ def build_email_body(
             <div class='section-dividend' style='background-color:#27ae60; color:white; padding:12px; margin:20px 0 10px 0; font-size:14px; font-weight:bold;'>💰 DIVIDEND BUYS - Yield ≥{div_threshold}% ({len(display_div)} stocks{f' of {len(dividend_buys)}' if len(dividend_buys) > len(display_div) else ''})</div>
             <p style='color:#27ae60; font-size:11px; margin:5px 0;'>Dividend stocks (≥{div_threshold}% yield) with SBI 9-10. Best entry quality only.</p>
             """
-            html += build_results_table(display_div, 'DIVIDEND', use_v2, False)
+            html += build_results_table(display_div, 'DIVIDEND', use_v2, False, show_pnl)
+    
+    # P&L column explanation (only if --pnl was used)
+    pnl_legend = ""
+    if show_pnl and len(PORTFOLIO_POSITIONS) > 0:
+        pnl_legend = """<br>
+        <strong>Cost/P&L%:</strong> From mypositions.csv (Fidelity export). <span style='color:#c0392b'>Red bold = loss &gt;10%</span> | <span style='color:#1e8449'>Green bold = gain &gt;20%</span>"""
     
     # Summary legend
     if mode in ['Portfolio', 'Friends']:
-        html += """
+        html += f"""
     <div class='summary-box'>
         <strong>Legend:</strong><br>
         ⭐ = IBD Stock (click for research) | 
@@ -1149,11 +1265,11 @@ def build_email_body(
         <strong>PRSI:</strong> ↗️ Bullish (14-day) ↘️ Bearish | <span style='color:#e67e22'>⚡ = PRSI(4) bearish (momentum warning)</span><br>
         OBV: 🟢 Accumulation 🔴 Distribution<br>
         <strong>Checkboxes:</strong> DMI (bulls control) | ADX (strong trend) | MACD (momentum up)<br>
-        <strong>ATR%:</strong> <span style='color:#27ae60'>Green &lt;3%</span> | <span style='color:#f39c12'>Yellow 3-5%</span> | <span style='color:#e74c3c'>Red &gt;5% + ADX&lt;25 + Days&gt;5 📞 = Consider covered calls</span>
+        <strong>ATR%:</strong> <span style='color:#27ae60'>Green &lt;3%</span> | <span style='color:#f39c12'>Yellow 3-5%</span> | <span style='color:#e74c3c'>Red &gt;5% + ADX&lt;25 + Days&gt;5 📞 = Consider covered calls</span>{pnl_legend}
     </div>
     """
     else:
-        html += """
+        html += f"""
     <div class='summary-box'>
         <strong>Legend:</strong><br>
         ⭐ = IBD Stock (click for research) | 
@@ -1163,7 +1279,7 @@ def build_email_body(
         &nbsp;&nbsp;&nbsp;<span style='color:#1e8449'>9-10 = Excellent</span> | <span style='color:#27ae60'>8 = Good</span> | <span style='color:#f39c12'>6-7 = OK</span> | <span style='color:#e67e22'>4-5 = Caution</span> | <span style='color:#c0392b'>0-3 = Avoid</span><br>
         <strong>PRSI:</strong> ↗️ Bullish (14-day) ↘️ Bearish | <span style='color:#e67e22'>⚡ = PRSI(4) bearish (momentum warning)</span><br>
         OBV: 🟢 Accumulation 🔴 Distribution<br>
-        <strong>Checkboxes:</strong> DMI (bulls control) | ADX (strong trend) | MACD (momentum up)
+        <strong>Checkboxes:</strong> DMI (bulls control) | ADX (strong trend) | MACD (momentum up){pnl_legend}
     </div>
     """
     
@@ -1181,7 +1297,8 @@ def send_email(
     div_threshold: float = 2.0,
     custom_title: Optional[str] = None,
     scan_params: dict = None,
-    custom_tickers: List[str] = None
+    custom_tickers: List[str] = None,
+    show_pnl: bool = False
 ) -> bool:
     """Send email report."""
     sender_email = os.getenv("GMAIL_EMAIL")
@@ -1213,7 +1330,7 @@ def send_email(
         recipients.append(additional_email)
     msg['To'] = ", ".join(recipients)
     
-    html_body = build_email_body(results, mode, use_v2, cboe_text, total_scanned, div_threshold, scan_params=scan_params, custom_tickers=custom_tickers)
+    html_body = build_email_body(results, mode, use_v2, cboe_text, total_scanned, div_threshold, scan_params=scan_params, custom_tickers=custom_tickers, show_pnl=show_pnl)
     msg.attach(MIMEText(html_body, 'html'))
     
     try:
@@ -1349,6 +1466,10 @@ V2 Key Changes:
                        help='Custom tickers file path (overrides mystocks.txt)')
     parser.add_argument('--div', type=float, default=2.0,
                        help='Minimum dividend yield %% for dividend section (default: 2.0)')
+    parser.add_argument('--pnl', action='store_true',
+                       help='Show cost basis and P&L%% from mypositions.csv (portfolio modes only)')
+    parser.add_argument('--positions-file', type=str, default=None,
+                       help='Custom positions file path (default: data/mypositions.csv)')
     parser.add_argument('-t', '--title', type=str, default=None,
                        help='Custom email subject title')
     parser.add_argument('--skip-options', action='store_true',
@@ -1378,6 +1499,18 @@ def main():
     
     use_v2 = not args.classic
     progress = create_progress_callback(args.quiet)
+    
+    # Load portfolio positions if --pnl flag is set
+    global PORTFOLIO_POSITIONS
+    show_pnl = args.pnl
+    if show_pnl:
+        positions_file = args.positions_file
+        PORTFOLIO_POSITIONS = load_positions(positions_file)
+        if not args.quiet:
+            if PORTFOLIO_POSITIONS:
+                print(f"📊 Loaded {len(PORTFOLIO_POSITIONS)} positions for P&L display")
+            else:
+                print("⚠️  No positions loaded (mypositions.csv not found or empty)")
     
     # Determine mode
     if args.mystocks:
@@ -1479,13 +1612,6 @@ def main():
             all_candidates = []
             
             for r in results:
-                # Get PRSI-4 data (fast signal for shorts)
-                prsi4_bearish = not getattr(r, 'prsi_fast_bullish', True)
-                # Try prsi_fast_days_since_flip first, fall back to prsi_days_since_flip
-                prsi4_days = getattr(r, 'prsi_fast_days_since_flip', None)
-                if prsi4_days is None:
-                    prsi4_days = r.prsi_days_since_flip if prsi4_bearish else 0
-                
                 candidate = analyze_short_candidate(
                     ticker=r.ticker,
                     current_price=r.price,
@@ -1499,8 +1625,6 @@ def main():
                     williams_r=getattr(r, 'williams_r', -50),
                     atr_percent=r.atr_percent,
                     psar_gap_slope=getattr(r, 'psar_gap_slope', 0),
-                    prsi4_bearish=prsi4_bearish,
-                    prsi4_days=prsi4_days,
                     fetch_options=False
                 )
                 all_candidates.append(candidate)
@@ -1711,7 +1835,8 @@ def main():
                     div_threshold=args.div,
                     custom_title=args.title,
                     scan_params=scan_params,
-                    custom_tickers=custom_tickers
+                    custom_tickers=custom_tickers,
+                    show_pnl=show_pnl
                 )
             
             # Save HTML if requested
@@ -1724,7 +1849,7 @@ def main():
                     'include_adr': args.adr,
                     'div_threshold': args.div
                 }
-                html = build_email_body(results, mode, use_v2, cboe_text, summary.total_scanned, args.div, scan_params=scan_params, custom_tickers=custom_tickers)
+                html = build_email_body(results, mode, use_v2, cboe_text, summary.total_scanned, args.div, scan_params=scan_params, custom_tickers=custom_tickers, show_pnl=show_pnl)
                 with open(args.html, 'w') as f:
                     f.write(html)
                 print(f"✓ HTML report saved to: {args.html}")

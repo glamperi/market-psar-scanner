@@ -170,11 +170,17 @@ def get_all_indicators(df, use_v2: bool = True):
         'psar_gap': psar_gap,
         'psar_days_in_trend': psar_data.get('days_in_trend', 0),
         'psar_gap_slope': psar_data.get('gap_slope', 0),
+        'psar_cross_direction': psar_data.get('cross_direction'),  # 'up' or 'down' or None
+        'is_broken': psar_data.get('is_broken', False),  # True if recently broke DOWN through PSAR
         'prsi_bullish': prsi_data.get('is_bullish', False),
+        'prsi_fast_bullish': prsi_data.get('is_bullish_fast', False),  # PRSI(4) for exit warnings
+        'prsi_momentum_warning': prsi_data.get('momentum_warning', False),  # PRSI(14) bullish but PRSI(4) bearish
+        'prsi_days_since_flip_fast': prsi_data.get('days_since_flip_fast', 0),
         'prsi_signal': prsi_data.get('signal', {}),
         'momentum_score': momentum_data.get('score', 5),
         'obv_bullish': obv_data.get('is_bullish', False),
-        'atr_percent': atr_data.get('atr_percent', 0),
+        'atr_percent': atr_data.get('atr_percent', 0),  # Distance from EMA (overbought/oversold)
+        'atr_volatility': atr_data.get('atr_volatility', 0),  # True volatility: ATR/price (always positive)
         'trend_score_value': trend_score.get('score', 50),
         'timing_score_value': timing_score.get('score', 50),
         'entry_allowed': psar_data['entry_risk']['entry_allowed'] and timing_score.get('entry_allowed', True),
