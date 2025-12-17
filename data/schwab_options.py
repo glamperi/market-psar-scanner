@@ -9,10 +9,9 @@ Setup:
 2. Set callback URL to: https://127.0.0.1:8182
 3. Wait for "Ready For Use" status
 4. Run initial auth to get refresh token
-5. Add to .env:
-   SCHWAB_CLIENT_ID=your-app-key
-   SCHWAB_CLIENT_SECRET=your-app-secret
-   SCHWAB_CALLBACK_URL=https://127.0.0.1:8182
+5. Add to .env or export:
+   SCHWAB_APP_KEY=your-app-key
+   SCHWAB_APP_SECRET=your-app-secret
 """
 
 import os
@@ -35,6 +34,27 @@ except ImportError:
     YFINANCE_AVAILABLE = False
 
 
+def _find_tokens_file() -> str:
+    """Find schwab_tokens.json in common locations."""
+    # Check multiple possible locations
+    search_paths = [
+        'schwab_tokens.json',  # Current directory
+        os.path.join(os.path.dirname(__file__), '..', 'schwab_tokens.json'),  # Parent (scanner root)
+        os.path.join(os.path.dirname(__file__), 'schwab_tokens.json'),  # Same dir as this file
+        os.path.expanduser('~/schwab_tokens.json'),  # Home directory
+        os.path.expanduser('~/Dev/Python/Investing/market-psar-scanner/schwab_tokens.json'),  # Full path
+    ]
+    
+    for path in search_paths:
+        abs_path = os.path.abspath(path)
+        if os.path.exists(abs_path):
+            print(f"📁 Found tokens file: {abs_path}")
+            return abs_path
+    
+    # Default to current directory (will be created on auth)
+    return 'schwab_tokens.json'
+
+
 class SchwabOptions:
     """Schwab API client for options data."""
     
@@ -49,13 +69,17 @@ class SchwabOptions:
             print("⚠️  schwabdev not installed. Run: pip install schwabdev")
             return
         
-        client_id = os.environ.get('SCHWAB_CLIENT_ID')
-        client_secret = os.environ.get('SCHWAB_CLIENT_SECRET')
-        callback_url = os.environ.get('SCHWAB_CALLBACK_URL', 'https://127.0.0.1:8182')
-        tokens_file = os.environ.get('SCHWAB_TOKENS_FILE', 'tokens.json')
+        # Support both naming conventions (APP_KEY takes priority)
+        client_id = os.environ.get('SCHWAB_APP_KEY') or os.environ.get('SCHWAB_CLIENT_ID')
+        client_secret = os.environ.get('SCHWAB_APP_SECRET') or os.environ.get('SCHWAB_CLIENT_SECRET')
+        callback_url = os.environ.get('SCHWAB_CALLBACK_URL', 'https://127.0.0.1:8182/callback')
+        
+        # Find tokens file
+        tokens_file = os.environ.get('SCHWAB_TOKENS_FILE') or _find_tokens_file()
         
         if not client_id or not client_secret:
             print("⚠️  Schwab credentials not set. Using yfinance fallback.")
+            print("    Set SCHWAB_APP_KEY and SCHWAB_APP_SECRET environment variables.")
             return
         
         try:
@@ -66,7 +90,7 @@ class SchwabOptions:
                 tokens_file=tokens_file
             )
             self.initialized = True
-            print("✅ Schwab API initialized")
+            print(f"✅ Schwab API initialized (tokens: {tokens_file})")
         except Exception as e:
             print(f"⚠️  Schwab init failed: {e}. Using yfinance fallback.")
     
@@ -218,25 +242,15 @@ class SchwabOptions:
             return None
     
     def get_covered_call_suggestion(
-        self, 
-        ticker: str, 
+        self,
+        ticker: str,
         current_price: float,
         min_days: int = 21,
         max_days: int = 60,
         target_otm_pct: float = 8.0
     ) -> Optional[Dict]:
         """
-        Get a covered call suggestion for a stock.
-        
-        Args:
-            ticker: Stock symbol
-            current_price: Current stock price
-            min_days: Minimum days to expiration
-            max_days: Maximum days to expiration
-            target_otm_pct: Target % out of the money for strike
-            
-        Returns:
-            Dict with suggestion details or None
+        Get covered call suggestion for a stock position.
         """
         chain = self.get_options_chain(ticker, max_days)
         if not chain or chain['calls'].empty:
@@ -253,23 +267,28 @@ class SchwabOptions:
         if calls.empty:
             return None
         
-        # Find strike near target OTM %
-        target_strike = current_price * (1 + target_otm_pct / 100)
-        calls['strike_diff'] = abs(calls['strike'] - target_strike)
-        
-        # Get best match
-        best = calls.loc[calls['strike_diff'].idxmin()]
-        
-        # Calculate metrics
-        strike = best['strike']
-        premium = best.get('bid', 0) or best.get('last', 0)
-        days = best['days_to_exp']
-        
-        if premium <= 0 or days <= 0:
+        # Filter to OTM calls only
+        otm_calls = calls[calls['strike'] > current_price].copy()
+        if otm_calls.empty:
             return None
         
-        upside_pct = ((strike - current_price) / current_price) * 100
-        premium_pct = (premium / current_price) * 100
+        # Calculate OTM%
+        otm_calls['otm_pct'] = ((otm_calls['strike'] - current_price) / current_price) * 100
+        otm_calls['otm_diff'] = abs(otm_calls['otm_pct'] - target_otm_pct)
+        
+        best = otm_calls.loc[otm_calls['otm_diff'].idxmin()]
+        
+        strike = best['strike']
+        bid = best.get('bid', 0) or 0
+        ask = best.get('ask', 0) or 0
+        mid = (bid + ask) / 2 if bid > 0 else ask
+        days = best['days_to_exp']
+        
+        if mid <= 0 or days <= 0:
+            return None
+        
+        upside = ((strike - current_price) / current_price) * 100
+        premium_pct = (mid / current_price) * 100
         annualized = (premium_pct / days) * 365
         
         return {
@@ -278,14 +297,15 @@ class SchwabOptions:
             'expiration': best['expiration'],
             'days_to_exp': int(days),
             'strike': strike,
-            'premium': premium,
-            'upside_pct': round(upside_pct, 1),
+            'bid': bid,
+            'ask': ask,
+            'premium': round(mid, 2),
+            'upside_pct': round(upside, 1),
             'premium_pct': round(premium_pct, 2),
             'annualized_yield': round(annualized, 1),
-            'delta': best.get('delta', 'N/A'),
             'source': chain['source']
         }
-
+    
     def get_deep_itm_put_suggestion(
         self,
         ticker: str,
@@ -296,19 +316,6 @@ class SchwabOptions:
     ) -> Optional[Dict]:
         """
         Get deep ITM put suggestion for bearish position.
-        
-        Strategy: Buy deep ITM put (delta ~0.97) for stock replacement on shorts.
-        Deep ITM puts move ~1:1 with stock with minimal time decay.
-        
-        Args:
-            ticker: Stock symbol
-            current_price: Current stock price
-            min_days: Minimum days to expiration
-            max_days: Maximum days to expiration
-            target_itm_pct: Target % in the money (30% = strike 30% above price)
-            
-        Returns:
-            Dict with put suggestion details or None
         """
         chain = self.get_options_chain(ticker, max_days)
         if not chain or chain['puts'].empty:
@@ -335,28 +342,21 @@ class SchwabOptions:
         
         # Try to find puts with delta ~0.97 (deep ITM)
         if 'delta' in itm_puts.columns:
-            # For puts, delta is negative; high abs delta = deep ITM
             itm_puts['abs_delta'] = itm_puts['delta'].abs()
             high_delta = itm_puts[itm_puts['abs_delta'] >= 0.90]
             
             if not high_delta.empty:
-                # Get closest to 0.97 delta
                 high_delta = high_delta.copy()
                 high_delta['delta_diff'] = abs(high_delta['abs_delta'] - 0.97)
                 best = high_delta.loc[high_delta['delta_diff'].idxmin()]
             else:
-                # No high delta, get deepest ITM
                 best = itm_puts.loc[itm_puts['itm_pct'].idxmax()]
         else:
-            # No delta data - use ITM% as proxy
-            # Target ~30% ITM for delta ~0.97
             target_itm = itm_puts[(itm_puts['itm_pct'] >= 25) & (itm_puts['itm_pct'] <= 40)]
             if not target_itm.empty:
-                # Get one with best bid
                 target_itm = target_itm.copy()
                 best = target_itm.loc[target_itm['bid'].idxmax()] if 'bid' in target_itm.columns else target_itm.iloc[0]
             else:
-                # Get deepest available
                 best = itm_puts.loc[itm_puts['itm_pct'].idxmax()]
         
         strike = best['strike']
@@ -369,7 +369,6 @@ class SchwabOptions:
         if mid <= 0 or days <= 0:
             return None
         
-        # Intrinsic value = strike - current price (for ITM put)
         intrinsic = strike - current_price
         time_value = mid - intrinsic if mid > intrinsic else 0
         time_value_pct = (time_value / mid) * 100 if mid > 0 else 0
@@ -440,18 +439,19 @@ def initial_auth():
     Run this once to complete OAuth flow and save tokens.
     
     Usage:
-        python -c "from schwab_options import initial_auth; initial_auth()"
+        python -c "from data.schwab_options import initial_auth; initial_auth()"
     """
     if not SCHWAB_AVAILABLE:
         print("❌ Install schwabdev first: pip install schwabdev")
         return
     
-    client_id = os.environ.get('SCHWAB_CLIENT_ID')
-    client_secret = os.environ.get('SCHWAB_CLIENT_SECRET')
-    callback_url = os.environ.get('SCHWAB_CALLBACK_URL', 'https://127.0.0.1:8182')
+    client_id = os.environ.get('SCHWAB_APP_KEY') or os.environ.get('SCHWAB_CLIENT_ID')
+    client_secret = os.environ.get('SCHWAB_APP_SECRET') or os.environ.get('SCHWAB_CLIENT_SECRET')
+    callback_url = os.environ.get('SCHWAB_CALLBACK_URL', 'https://127.0.0.1:8182/callback')
+    tokens_file = _find_tokens_file()
     
     if not client_id or not client_secret:
-        print("❌ Set SCHWAB_CLIENT_ID and SCHWAB_CLIENT_SECRET environment variables")
+        print("❌ Set SCHWAB_APP_KEY and SCHWAB_APP_SECRET environment variables")
         return
     
     print(f"""
@@ -462,7 +462,7 @@ def initial_auth():
 ║ 2. Log in with your Schwab brokerage credentials             ║
 ║ 3. Authorize the app                                         ║
 ║ 4. You'll be redirected to a blank page - that's normal      ║
-║ 5. Tokens will be saved to schwab_token.json                 ║
+║ 5. Tokens will be saved to: {tokens_file:<30} ║
 ╚══════════════════════════════════════════════════════════════╝
     """)
     
@@ -471,11 +471,10 @@ def initial_auth():
             app_key=client_id,
             app_secret=client_secret,
             callback_url=callback_url,
-            tokens_file='tokens.json'
+            tokens_file=tokens_file
         )
-        print("✅ Authentication successful! Tokens saved to tokens.json")
+        print(f"✅ Authentication successful! Tokens saved to {tokens_file}")
         
-        # Test with a quote
         response = client.quotes(['AAPL'])
         if response.status_code == 200:
             print("✅ API test successful - ready to use!")
@@ -487,8 +486,22 @@ def initial_auth():
 
 
 if __name__ == '__main__':
-    # Quick test
-    print("Testing options chain fetch...")
+    print("="*60)
+    print("Schwab Options Module Test")
+    print("="*60)
+    
+    app_key = os.environ.get('SCHWAB_APP_KEY') or os.environ.get('SCHWAB_CLIENT_ID')
+    app_secret = os.environ.get('SCHWAB_APP_SECRET') or os.environ.get('SCHWAB_CLIENT_SECRET')
+    tokens_file = _find_tokens_file()
+    
+    print(f"\nConfiguration:")
+    print(f"  SCHWAB_APP_KEY: {'✅ Set' if app_key else '❌ NOT SET'}")
+    print(f"  SCHWAB_APP_SECRET: {'✅ Set' if app_secret else '❌ NOT SET'}")
+    print(f"  schwabdev installed: {'✅ Yes' if SCHWAB_AVAILABLE else '❌ No'}")
+    print(f"  yfinance installed: {'✅ Yes' if YFINANCE_AVAILABLE else '❌ No'}")
+    print(f"  Token file: {tokens_file if os.path.exists(tokens_file) else '❌ Not found'}")
+    
+    print("\nTesting options chain fetch...")
     chain = get_options_chain('AAPL', days_out=45)
     
     if chain:
@@ -496,14 +509,5 @@ if __name__ == '__main__':
         print(f"   Underlying: ${chain['underlying_price']:.2f}")
         print(f"   Calls: {len(chain['calls'])} contracts")
         print(f"   Puts: {len(chain['puts'])} contracts")
-        
-        # Test covered call suggestion
-        suggestion = get_covered_call_suggestion('AAPL', chain['underlying_price'])
-        if suggestion:
-            print(f"\n📞 Covered Call Suggestion for AAPL:")
-            print(f"   Expiration: {suggestion['expiration']} ({suggestion['days_to_exp']} days)")
-            print(f"   Strike: ${suggestion['strike']:.2f} ({suggestion['upside_pct']:+.1f}% OTM)")
-            print(f"   Premium: ${suggestion['premium']:.2f} ({suggestion['premium_pct']:.2f}%)")
-            print(f"   Annualized: {suggestion['annualized_yield']:.1f}%")
     else:
         print("❌ Failed to fetch options chain")

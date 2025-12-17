@@ -1,675 +1,424 @@
 """
-Options data fetcher with multiple sources:
-1. Schwab API (if credentials available) - primary
-2. yfinance (default)
-3. Yahoo Finance HTML scraping (fallback)
+Options Data Module - Schwab API Integration
+=============================================
+Fetches real-time options chain data from Schwab API.
+
+SETUP:
+1. Set environment variables:
+   export SCHWAB_APP_KEY="your-app-key"
+   export SCHWAB_APP_SECRET="your-app-secret"
+
+2. Place schwab_tokens.json in the scanner root directory with:
+   {
+     "access_token": "...",
+     "refresh_token": "...",
+     "expires_at": "2025-12-16T13:15:39.778469",
+     "token_type": "Bearer"
+   }
+
+The module will auto-refresh tokens and save them back to the JSON file.
 """
 
 import os
+import json
 import requests
 from datetime import datetime, timedelta
-from typing import Optional, Dict, List
-import re
+from typing import Dict, Optional, Tuple
+import base64
 
-# Check for Schwab credentials
-SCHWAB_CLIENT_ID = os.getenv('SCHWAB_CLIENT_ID')
-SCHWAB_CLIENT_SECRET = os.getenv('SCHWAB_CLIENT_SECRET')
-SCHWAB_REFRESH_TOKEN = os.getenv('SCHWAB_REFRESH_TOKEN')
+# =============================================================================
+# CONFIGURATION - Uses same env vars as your other Schwab program
+# =============================================================================
 
+SCHWAB_APP_KEY = os.getenv('SCHWAB_APP_KEY') or os.getenv('SCHWAB_CLIENT_ID')
+SCHWAB_APP_SECRET = os.getenv('SCHWAB_APP_SECRET') or os.getenv('SCHWAB_CLIENT_SECRET')
+
+# Token file location - check multiple paths
+TOKEN_FILE_PATHS = [
+    'schwab_tokens.json',                    # Current directory
+    os.path.expanduser('~/schwab_tokens.json'),  # Home directory
+    os.path.join(os.path.dirname(__file__), '..', 'schwab_tokens.json'),  # Scanner root
+]
+
+SCHWAB_TOKEN_URL = "https://api.schwabapi.com/v1/oauth/token"
+SCHWAB_OPTIONS_URL = "https://api.schwabapi.com/marketdata/v1/chains"
+
+# Cached token
 _schwab_access_token = None
 _schwab_token_expiry = None
+_token_file_path = None
 
 
-def _get_schwab_token() -> Optional[str]:
-    """Get Schwab access token using refresh token."""
-    global _schwab_access_token, _schwab_token_expiry
+def _find_token_file() -> Optional[str]:
+    """Find the schwab_tokens.json file."""
+    global _token_file_path
     
-    if not all([SCHWAB_CLIENT_ID, SCHWAB_CLIENT_SECRET, SCHWAB_REFRESH_TOKEN]):
+    if _token_file_path and os.path.exists(_token_file_path):
+        return _token_file_path
+    
+    for path in TOKEN_FILE_PATHS:
+        if os.path.exists(path):
+            _token_file_path = path
+            return path
+    
+    return None
+
+
+def _load_tokens() -> Optional[Dict]:
+    """Load tokens from JSON file."""
+    token_file = _find_token_file()
+    if not token_file:
         return None
     
-    # Return cached token if still valid
-    if _schwab_access_token and _schwab_token_expiry and datetime.now() < _schwab_token_expiry:
-        return _schwab_access_token
+    try:
+        with open(token_file, 'r') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"Error loading tokens: {e}")
+        return None
+
+
+def _save_tokens(tokens: Dict) -> bool:
+    """Save tokens back to JSON file."""
+    token_file = _find_token_file()
+    if not token_file:
+        # Create in current directory
+        token_file = 'schwab_tokens.json'
     
     try:
-        url = "https://api.schwabapi.com/v1/oauth/token"
-        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+        with open(token_file, 'w') as f:
+            json.dump(tokens, f, indent=2)
+        return True
+    except Exception as e:
+        print(f"Error saving tokens: {e}")
+        return False
+
+
+def _is_token_expired(tokens: Dict) -> bool:
+    """Check if access token is expired."""
+    if not tokens or 'expires_at' not in tokens:
+        return True
+    
+    try:
+        expires_at = datetime.fromisoformat(tokens['expires_at'].replace('Z', '+00:00').replace('+00:00', ''))
+        # Add 5 minute buffer
+        return datetime.now() >= (expires_at - timedelta(minutes=5))
+    except:
+        return True
+
+
+def _refresh_access_token(refresh_token: str) -> Optional[Dict]:
+    """Refresh the access token using refresh token."""
+    if not SCHWAB_APP_KEY or not SCHWAB_APP_SECRET:
+        print("Missing SCHWAB_APP_KEY or SCHWAB_APP_SECRET environment variables")
+        return None
+    
+    try:
+        # Create Basic auth header
+        credentials = f"{SCHWAB_APP_KEY}:{SCHWAB_APP_SECRET}"
+        encoded_credentials = base64.b64encode(credentials.encode()).decode()
+        
+        headers = {
+            "Authorization": f"Basic {encoded_credentials}",
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
+        
         data = {
             "grant_type": "refresh_token",
-            "refresh_token": SCHWAB_REFRESH_TOKEN,
-            "client_id": SCHWAB_CLIENT_ID,
-            "client_secret": SCHWAB_CLIENT_SECRET
+            "refresh_token": refresh_token
         }
         
-        response = requests.post(url, headers=headers, data=data, timeout=10)
+        response = requests.post(SCHWAB_TOKEN_URL, headers=headers, data=data, timeout=30)
+        
         if response.status_code == 200:
             token_data = response.json()
-            _schwab_access_token = token_data.get('access_token')
-            expires_in = token_data.get('expires_in', 1800)  # Default 30 min
-            _schwab_token_expiry = datetime.now() + timedelta(seconds=expires_in - 60)
+            
+            # Calculate expiry (typically 30 minutes)
+            expires_in = token_data.get('expires_in', 1800)
+            expires_at = datetime.now() + timedelta(seconds=expires_in)
+            
+            return {
+                "access_token": token_data.get('access_token'),
+                "refresh_token": token_data.get('refresh_token', refresh_token),  # May return new refresh token
+                "expires_at": expires_at.isoformat(),
+                "token_type": token_data.get('token_type', 'Bearer')
+            }
+        else:
+            print(f"Token refresh failed: {response.status_code} - {response.text}")
+            return None
+            
+    except Exception as e:
+        print(f"Token refresh error: {e}")
+        return None
+
+
+def get_schwab_access_token() -> Optional[str]:
+    """
+    Get a valid Schwab access token.
+    
+    Automatically refreshes if expired and saves new tokens to file.
+    """
+    global _schwab_access_token, _schwab_token_expiry
+    
+    # Check cached token first
+    if _schwab_access_token and _schwab_token_expiry:
+        if datetime.now() < _schwab_token_expiry:
             return _schwab_access_token
-    except Exception as e:
-        print(f"  Schwab token error: {e}")
     
-    return None
+    # Load tokens from file
+    tokens = _load_tokens()
+    
+    if not tokens:
+        print("No schwab_tokens.json found. Run authentication first.")
+        return None
+    
+    # Check if token is still valid
+    if not _is_token_expired(tokens):
+        _schwab_access_token = tokens.get('access_token')
+        try:
+            _schwab_token_expiry = datetime.fromisoformat(tokens['expires_at'].replace('Z', '+00:00').replace('+00:00', ''))
+        except:
+            _schwab_token_expiry = datetime.now() + timedelta(minutes=25)
+        return _schwab_access_token
+    
+    # Token expired - refresh it
+    print("Schwab token expired, refreshing...")
+    refresh_token = tokens.get('refresh_token')
+    
+    if not refresh_token:
+        print("No refresh token available. Re-authentication required.")
+        return None
+    
+    new_tokens = _refresh_access_token(refresh_token)
+    
+    if new_tokens:
+        # Save new tokens
+        _save_tokens(new_tokens)
+        
+        # Cache in memory
+        _schwab_access_token = new_tokens.get('access_token')
+        try:
+            _schwab_token_expiry = datetime.fromisoformat(new_tokens['expires_at'])
+        except:
+            _schwab_token_expiry = datetime.now() + timedelta(minutes=25)
+        
+        print("Schwab token refreshed successfully")
+        return _schwab_access_token
+    else:
+        print("Failed to refresh token. Re-authentication may be required.")
+        return None
 
 
-def _fetch_options_schwab(ticker: str, min_days: int = 14, max_days: int = 45, option_type: str = 'ALL') -> Optional[Dict]:
-    """Fetch options data from Schwab API.
+def get_options_chain(ticker: str, strike_count: int = 10) -> Optional[Dict]:
+    """
+    Fetch options chain from Schwab API.
     
     Args:
         ticker: Stock symbol
-        min_days: Minimum days to expiration
-        max_days: Maximum days to expiration
-        option_type: 'PUT', 'CALL', or 'ALL'
+        strike_count: Number of strikes above/below current price
+    
+    Returns:
+        Options chain data or None
     """
-    token = _get_schwab_token()
-    if not token:
+    access_token = get_schwab_access_token()
+    
+    if not access_token:
         return None
     
     try:
-        # Calculate date range
-        today = datetime.now().date()
-        from_date = (today + timedelta(days=min_days)).strftime('%Y-%m-%d')
-        to_date = (today + timedelta(days=max_days)).strftime('%Y-%m-%d')
-        
-        url = f"https://api.schwabapi.com/marketdata/v1/chains"
-        params = {
-            "symbol": ticker,
-            "contractType": option_type,
-            "fromDate": from_date,
-            "toDate": to_date,
-            "strikeCount": 20
-        }
-        headers = {"Authorization": f"Bearer {token}"}
-        
-        response = requests.get(url, headers=headers, params=params, timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            return _parse_schwab_options(data, ticker)
-    except Exception as e:
-        print(f"  Schwab API error for {ticker}: {e}")
-    
-    return None
-
-
-def _parse_schwab_options(data: Dict, ticker: str) -> Optional[Dict]:
-    """Parse Schwab options response for both calls and puts."""
-    try:
-        call_exp_map = data.get('callExpDateMap', {})
-        put_exp_map = data.get('putExpDateMap', {})
-        
-        if not call_exp_map and not put_exp_map:
-            return None
-        
-        # Get first expiration from whichever is available
-        exp_date = None
-        if put_exp_map:
-            first_exp = list(put_exp_map.keys())[0]
-            exp_date = first_exp.split(':')[0]  # Format: "2025-01-17:45"
-        elif call_exp_map:
-            first_exp = list(call_exp_map.keys())[0]
-            exp_date = first_exp.split(':')[0]
-        
-        # Collect puts
-        puts = []
-        if put_exp_map:
-            first_exp = list(put_exp_map.keys())[0]
-            strikes_data = put_exp_map[first_exp]
-            for strike_str, options in strikes_data.items():
-                strike = float(strike_str)
-                opt = options[0] if options else {}
-                puts.append({
-                    'strike': strike,
-                    'bid': opt.get('bid', 0),
-                    'ask': opt.get('ask', 0),
-                    'delta': opt.get('delta', 0),
-                    'lastPrice': opt.get('last', 0)
-                })
-        
-        # Collect calls
-        calls = []
-        if call_exp_map:
-            first_exp = list(call_exp_map.keys())[0]
-            if not exp_date:
-                exp_date = first_exp.split(':')[0]
-            strikes_data = call_exp_map[first_exp]
-            for strike_str, options in strikes_data.items():
-                strike = float(strike_str)
-                opt = options[0] if options else {}
-                calls.append({
-                    'strike': strike,
-                    'bid': opt.get('bid', 0),
-                    'ask': opt.get('ask', 0),
-                    'delta': opt.get('delta', 0),
-                    'lastPrice': opt.get('last', 0)
-                })
-        
-        return {
-            'expiration': exp_date,
-            'puts': puts,
-            'calls': calls,
-            'source': 'schwab'
-        }
-    except Exception as e:
-        return None
-
-
-def _fetch_options_yfinance(ticker: str, min_days: int = 14, max_days: int = 28, option_type: str = 'ALL') -> Optional[Dict]:
-    """Fetch options data from yfinance.
-    
-    Args:
-        ticker: Stock symbol
-        min_days: Minimum days to expiration
-        max_days: Maximum days to expiration  
-        option_type: 'PUT', 'CALL', or 'ALL'
-    """
-    try:
-        import yfinance as yf
-        
-        stock = yf.Ticker(ticker)
-        expirations = stock.options
-        if not expirations:
-            return None
-        
-        today = datetime.now().date()
-        target_exp = None
-        
-        # Find expiration in target range
-        for exp_str in expirations:
-            exp_date = datetime.strptime(exp_str, '%Y-%m-%d').date()
-            days_to_exp = (exp_date - today).days
-            if min_days <= days_to_exp <= max_days:
-                target_exp = exp_str
-                break
-        
-        if not target_exp:
-            # Fallback to first available >= min_days
-            for exp_str in expirations:
-                exp_date = datetime.strptime(exp_str, '%Y-%m-%d').date()
-                if (exp_date - today).days >= min_days:
-                    target_exp = exp_str
-                    break
-        
-        if not target_exp:
-            return None
-        
-        chain = stock.option_chain(target_exp)
-        
-        # Collect puts
-        puts_list = []
-        if option_type in ('PUT', 'ALL') and not chain.puts.empty:
-            for _, row in chain.puts.iterrows():
-                puts_list.append({
-                    'strike': row.get('strike', 0),
-                    'bid': row.get('bid', 0) or 0,
-                    'ask': row.get('ask', 0) or 0,
-                    'delta': row.get('delta', None),
-                    'lastPrice': row.get('lastPrice', 0) or 0
-                })
-        
-        # Collect calls
-        calls_list = []
-        if option_type in ('CALL', 'ALL') and not chain.calls.empty:
-            for _, row in chain.calls.iterrows():
-                calls_list.append({
-                    'strike': row.get('strike', 0),
-                    'bid': row.get('bid', 0) or 0,
-                    'ask': row.get('ask', 0) or 0,
-                    'delta': row.get('delta', None),
-                    'lastPrice': row.get('lastPrice', 0) or 0
-                })
-        
-        return {
-            'expiration': target_exp,
-            'puts': puts_list,
-            'calls': calls_list,
-            'source': 'yfinance'
-        }
-        
-    except Exception as e:
-        error_msg = str(e)
-        if 'Too Many Requests' not in error_msg:
-            pass  # Silent for rate limits
-        return None
-
-
-def _fetch_options_yahoo_scrape(ticker: str, min_days: int = 14, max_days: int = 28) -> Optional[Dict]:
-    """Fetch options by scraping Yahoo Finance HTML."""
-    try:
-        import pandas as pd
-        
-        # First get available expirations
-        url = f"https://finance.yahoo.com/quote/{ticker}/options"
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Connection': 'keep-alive',
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json"
         }
         
-        response = requests.get(url, headers=headers, timeout=15)
-        if response.status_code != 200:
+        params = {
+            "symbol": ticker.upper(),
+            "contractType": "PUT",
+            "strikeCount": strike_count,
+            "includeUnderlyingQuote": "true",
+            "strategy": "SINGLE"
+        }
+        
+        response = requests.get(SCHWAB_OPTIONS_URL, headers=headers, params=params, timeout=30)
+        
+        if response.status_code == 200:
+            return response.json()
+        elif response.status_code == 401:
+            # Token might have expired mid-session, try refresh
+            global _schwab_access_token, _schwab_token_expiry
+            _schwab_access_token = None
+            _schwab_token_expiry = None
+            
+            # Retry once
+            access_token = get_schwab_access_token()
+            if access_token:
+                headers["Authorization"] = f"Bearer {access_token}"
+                response = requests.get(SCHWAB_OPTIONS_URL, headers=headers, params=params, timeout=30)
+                if response.status_code == 200:
+                    return response.json()
+        
+        print(f"Options chain request failed for {ticker}: {response.status_code}")
+        return None
+        
+    except Exception as e:
+        print(f"Options chain error for {ticker}: {e}")
+        return None
+
+
+def get_put_spread_recommendation(ticker: str, current_price: float, atr_percent: float = 5.0) -> Optional[Dict]:
+    """
+    Get put spread recommendation for a short candidate.
+    
+    Args:
+        ticker: Stock symbol
+        current_price: Current stock price
+        atr_percent: ATR percentage for strike selection
+    
+    Returns:
+        Dict with buy_strike, sell_strike, expiration, spread_cost, max_profit
+    """
+    chain = get_options_chain(ticker)
+    
+    if not chain:
+        return None
+    
+    try:
+        put_map = chain.get('putExpDateMap', {})
+        
+        if not put_map:
             return None
         
-        html = response.text
+        # Find expiration 20-45 days out
+        today = datetime.now()
+        target_min = today + timedelta(days=20)
+        target_max = today + timedelta(days=45)
         
-        # Check for rate limiting
-        if 'Too Many Requests' in html or response.status_code == 429:
-            return None
+        best_exp = None
+        best_exp_date = None
         
-        # Find expiration dates in the page
-        date_pattern = r'[?&]date=(\d{10})'
-        timestamps = re.findall(date_pattern, html)
-        
-        if not timestamps:
-            # Try alternative pattern
-            date_pattern2 = r'"expirationDates":\[([^\]]+)\]'
-            exp_match = re.search(date_pattern2, html)
-            if exp_match:
-                timestamps = re.findall(r'(\d{10})', exp_match.group(1))
-        
-        # If no timestamps found, return None (consent page blocks scraping)
-        if not timestamps:
-            return None
-        
-        today = datetime.now().date()
-        target_timestamp = None
-        target_exp = None
-        
-        unique_timestamps = sorted(set(timestamps))
-        
-        for ts in unique_timestamps:
+        for exp_key in put_map.keys():
+            # Parse expiration date (format: "2025-01-17:5")
+            exp_date_str = exp_key.split(':')[0]
             try:
-                exp_date = datetime.fromtimestamp(int(ts)).date()
-                days_to_exp = (exp_date - today).days
-                if min_days <= days_to_exp <= max_days:
-                    target_timestamp = ts
-                    target_exp = exp_date.strftime('%Y-%m-%d')
-                    break
-            except (ValueError, OSError):
+                exp_date = datetime.strptime(exp_date_str, '%Y-%m-%d')
+                if target_min <= exp_date <= target_max:
+                    if best_exp is None or exp_date < best_exp_date:
+                        best_exp = exp_key
+                        best_exp_date = exp_date
+            except:
                 continue
         
-        if not target_timestamp:
-            for ts in unique_timestamps:
-                try:
-                    exp_date = datetime.fromtimestamp(int(ts)).date()
-                    if (exp_date - today).days >= min_days:
-                        target_timestamp = ts
-                        target_exp = exp_date.strftime('%Y-%m-%d')
-                        break
-                except (ValueError, OSError):
-                    continue
+        if not best_exp:
+            # Fall back to first available expiration
+            best_exp = list(put_map.keys())[0]
+            best_exp_date = datetime.strptime(best_exp.split(':')[0], '%Y-%m-%d')
         
-        if not target_timestamp:
+        strikes_data = put_map[best_exp]
+        
+        # Find strikes
+        # Buy put: slightly ITM (5-10% above current price)
+        # Sell put: OTM (10-20% below current price)
+        buy_target = current_price * 1.05  # 5% ITM
+        sell_target = current_price * 0.85  # 15% OTM
+        
+        buy_strike = None
+        buy_premium = None
+        sell_strike = None
+        sell_premium = None
+        
+        for strike_str, options in strikes_data.items():
+            strike = float(strike_str)
+            if options and len(options) > 0:
+                opt = options[0]
+                mid_price = (opt.get('bid', 0) + opt.get('ask', 0)) / 2
+                
+                # Find buy strike (closest to buy_target, above current price)
+                if strike >= current_price:
+                    if buy_strike is None or abs(strike - buy_target) < abs(buy_strike - buy_target):
+                        buy_strike = strike
+                        buy_premium = mid_price
+                
+                # Find sell strike (closest to sell_target, below current price)
+                if strike < current_price:
+                    if sell_strike is None or abs(strike - sell_target) < abs(sell_strike - sell_target):
+                        sell_strike = strike
+                        sell_premium = mid_price
+        
+        if not buy_strike or not sell_strike or not buy_premium:
             return None
         
-        # Fetch the specific expiration page
-        url_with_date = f"https://finance.yahoo.com/quote/{ticker}/options?date={target_timestamp}"
-        response = requests.get(url_with_date, headers=headers, timeout=15)
-        if response.status_code != 200:
-            return None
+        spread_cost = buy_premium - (sell_premium or 0)
+        max_profit = (buy_strike - sell_strike) - spread_cost
         
-        # Parse tables
-        try:
-            tables = pd.read_html(response.text)
-            
-            if not tables:
-                return None
-            
-            # Find puts table - second table with Strike column
-            puts_df = None
-            found_first = False
-            
-            for df in tables:
-                cols_lower = [str(c).lower() for c in df.columns]
-                if 'strike' in cols_lower:
-                    if found_first:
-                        puts_df = df
-                        break
-                    found_first = True
-            
-            if puts_df is None and len(tables) >= 2:
-                puts_df = tables[1]
-            
-            if puts_df is None or puts_df.empty:
-                return None
-            
-            puts_list = []
-            for _, row in puts_df.iterrows():
-                try:
-                    strike = None
-                    bid = 0
-                    ask = 0
-                    last = 0
-                    
-                    for col in row.index:
-                        col_lower = str(col).lower()
-                        val = row[col]
-                        
-                        if 'strike' in col_lower:
-                            strike = float(str(val).replace(',', ''))
-                        elif col_lower == 'bid':
-                            bid = float(str(val).replace(',', '').replace('-', '0'))
-                        elif col_lower == 'ask':
-                            ask = float(str(val).replace(',', '').replace('-', '0'))
-                        elif 'last' in col_lower or col_lower == 'price':
-                            last = float(str(val).replace(',', '').replace('-', '0'))
-                    
-                    if strike and strike > 0:
-                        puts_list.append({
-                            'strike': strike,
-                            'bid': bid,
-                            'ask': ask,
-                            'lastPrice': last
-                        })
-                except (ValueError, TypeError):
-                    continue
-            
-            if not puts_list:
-                return None
-            
-            return {
-                'expiration': target_exp,
-                'puts': puts_list,
-                'source': 'yahoo_scrape'
-            }
-            
-        except Exception as e:
-            return None
-            
+        days_to_expiry = (best_exp_date - today).days
+        
+        return {
+            'buy_strike': buy_strike,
+            'sell_strike': sell_strike,
+            'expiration': best_exp_date.strftime('%Y-%m-%d'),
+            'days_to_expiry': days_to_expiry,
+            'spread_cost': spread_cost,
+            'max_profit': max_profit,
+            'buy_premium': buy_premium,
+            'sell_premium': sell_premium
+        }
+        
     except Exception as e:
+        print(f"Put spread calculation error for {ticker}: {e}")
         return None
 
 
-def _fetch_options_yahoo_selenium(ticker: str, min_days: int = 14, max_days: int = 28) -> Optional[Dict]:
-    """Fetch options using Selenium - parse tables directly."""
-    try:
-        import pandas as pd
-        from io import StringIO
-        from selenium import webdriver
-        from selenium.webdriver.chrome.options import Options
-        from selenium.webdriver.chrome.service import Service
-        from webdriver_manager.chrome import ChromeDriverManager
-        import time
-        
-        chrome_options = Options()
-        chrome_options.add_argument("--headless=new")  # New headless mode
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument("--disable-gpu")
-        chrome_options.add_argument("--disable-extensions")
-        chrome_options.add_argument("--disable-plugins")
-        chrome_options.add_argument("--disable-images")  # Faster loading
-        chrome_options.add_argument("--blink-settings=imagesEnabled=false")
-        chrome_options.add_argument("--window-size=1920,1080")
-        chrome_options.add_argument("--disable-software-rasterizer")
-        chrome_options.add_argument("--remote-debugging-port=9222")
-        chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-        
-        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
-        driver.set_page_load_timeout(30)  # Increased for CI
-        
-        try:
-            url = f"https://finance.yahoo.com/quote/{ticker}/options"
-            driver.get(url)
-            time.sleep(5)
-            
-            html = driver.page_source
-            
-            # Parse tables directly - default page shows nearest expiration
-            tables = pd.read_html(StringIO(html))
-            if not tables or len(tables) < 2:
-                return None
-            
-            # Second table is puts
-            puts_df = tables[1]
-            
-            if puts_df.empty or 'Strike' not in puts_df.columns:
-                return None
-            
-            # Extract expiration from contract name (e.g., 'MRK251212P00055000')
-            target_exp = None
-            if 'Contract Name' in puts_df.columns and len(puts_df) > 0:
-                contract = str(puts_df.iloc[0]['Contract Name'])
-                ticker_len = len(ticker)
-                if len(contract) > ticker_len + 6:
-                    date_str = contract[ticker_len:ticker_len+6]
-                    try:
-                        year = 2000 + int(date_str[0:2])
-                        month = int(date_str[2:4])
-                        day = int(date_str[4:6])
-                        target_exp = f"{year}-{month:02d}-{day:02d}"
-                    except:
-                        target_exp = datetime.now().strftime('%Y-%m-%d')
-            
-            if not target_exp:
-                target_exp = datetime.now().strftime('%Y-%m-%d')
-            
-            puts_list = []
-            for _, row in puts_df.iterrows():
-                try:
-                    strike = float(row.get('Strike', 0))
-                    bid = row.get('Bid', 0)
-                    ask = row.get('Ask', 0)
-                    last = row.get('Last Price', 0)
-                    
-                    # Handle '-' values
-                    bid = float(bid) if bid != '-' and pd.notna(bid) else 0
-                    ask = float(ask) if ask != '-' and pd.notna(ask) else 0
-                    last = float(last) if last != '-' and pd.notna(last) else 0
-                    
-                    if strike and strike > 0:
-                        puts_list.append({
-                            'strike': strike,
-                            'bid': bid,
-                            'ask': ask,
-                            'lastPrice': last
-                        })
-                except:
-                    continue
-            
-            if not puts_list:
-                return None
-            
-            return {
-                'expiration': target_exp,
-                'puts': puts_list,
-                'source': 'yahoo_selenium'
-            }
-            
-        finally:
-            driver.quit()
-            
-    except Exception as e:
-        # Silent fail - let other sources try
-        return None
+def is_schwab_available() -> bool:
+    """Check if Schwab API is configured and available."""
+    if not SCHWAB_APP_KEY or not SCHWAB_APP_SECRET:
+        return False
+    
+    token_file = _find_token_file()
+    if not token_file:
+        return False
+    
+    return True
 
 
-def fetch_options_chain(ticker: str, min_days: int = 14, max_days: int = 28, option_type: str = 'ALL', debug: bool = False) -> Optional[Dict]:
-    """
-    Fetch options chain using best available source.
+# =============================================================================
+# STANDALONE TEST
+# =============================================================================
+if __name__ == "__main__":
+    print("Schwab Options Data Module Test")
+    print("=" * 50)
     
-    Order of preference:
-    1. Schwab API (if credentials available)
-    2. yfinance 
-    3. Yahoo Finance HTML scraping
-    4. Yahoo Finance Selenium (handles consent page)
+    print(f"\nConfiguration:")
+    print(f"  SCHWAB_APP_KEY: {'Set' if SCHWAB_APP_KEY else 'NOT SET'}")
+    print(f"  SCHWAB_APP_SECRET: {'Set' if SCHWAB_APP_SECRET else 'NOT SET'}")
+    print(f"  Token file: {_find_token_file() or 'NOT FOUND'}")
     
-    Args:
-        ticker: Stock symbol
-        min_days: Minimum days to expiration
-        max_days: Maximum days to expiration
-        option_type: 'PUT', 'CALL', or 'ALL'
-        debug: Print debug messages
-    
-    Returns:
-        Dict with 'expiration', 'puts', 'calls', 'source' or None if all fail
-    """
-    # Try Schwab first if credentials exist
-    if SCHWAB_CLIENT_ID:
-        if debug:
-            print(f"    [{ticker}] Trying Schwab API...")
-        result = _fetch_options_schwab(ticker, min_days, max_days, option_type)
-        if result:
-            if debug:
-                print(f"    [{ticker}] ✓ Schwab API success")
-            return result
-        if debug:
-            print(f"    [{ticker}] ✗ Schwab API failed")
-    
-    # Try yfinance
-    if debug:
-        print(f"    [{ticker}] Trying yfinance...")
-    result = _fetch_options_yfinance(ticker, min_days, max_days, option_type)
-    if result:
-        if debug:
-            print(f"    [{ticker}] ✓ yfinance success")
-        return result
-    if debug:
-        print(f"    [{ticker}] ✗ yfinance failed, trying Yahoo scrape...")
-    
-    # Fallback to Yahoo scraping (only supports puts currently)
-    if option_type in ('PUT', 'ALL'):
-        result = _fetch_options_yahoo_scrape(ticker, min_days, max_days)
-        if result:
-            if debug:
-                print(f"    [{ticker}] ✓ Yahoo scrape success (source: {result.get('source', 'unknown')})")
-            # Add empty calls list for consistency
-            if 'calls' not in result:
-                result['calls'] = []
-            return result
-    if debug:
-        print(f"    [{ticker}] ✗ All sources failed")
-    
-    # Note: _fetch_options_yahoo_selenium() exists but is not called by default
-    # Enable manually if needed for debugging consent page issues
-    
-    return None
-
-
-def get_options_source_status() -> str:
-    """Return which options source is available."""
-    if SCHWAB_CLIENT_ID and SCHWAB_CLIENT_SECRET and SCHWAB_REFRESH_TOKEN:
-        return "Schwab API"
-    return "yfinance + Yahoo scrape fallback"
-
-
-def find_csp_puts(puts: list, current_price: float, min_ask_pct: float = 0.0005) -> dict:
-    """
-    Find buy and sell puts for CSP (Cash Secured Put) strategy.
-    
-    Args:
-        puts: List of put dicts with 'strike', 'bid', 'ask', 'lastPrice'
-        current_price: Current stock price
-        min_ask_pct: Minimum ask as percentage of stock price (default 0.05% = 0.0005)
-    
-    Returns:
-        Dict with 'buy_put', 'sell_put' or None values if not found
-    """
-    if not puts or current_price <= 0:
-        return {'buy_put': None, 'sell_put': None}
-    
-    min_ask = current_price * min_ask_pct  # e.g., $100 * 0.0005 = $0.05
-    
-    # Sort puts by strike descending
-    sorted_puts = sorted(puts, key=lambda x: x.get('strike', 0), reverse=True)
-    
-    buy_put = None   # Higher strike, closer to current price (more expensive)
-    sell_put = None  # Lower strike, further OTM (cheaper)
-    
-    for put in sorted_puts:
-        strike = put.get('strike', 0)
-        ask = put.get('ask', 0)
-        bid = put.get('bid', 0)
+    if is_schwab_available():
+        print("\n✓ Schwab API is configured")
         
-        # Skip if strike is above current price (ITM)
-        if strike >= current_price:
-            continue
-        
-        # Skip if ask is below minimum threshold
-        if ask < min_ask:
-            continue
-        
-        # Skip if no meaningful bid/ask
-        if ask <= 0:
-            continue
-        
-        # First valid put becomes buy_put (closest OTM)
-        if buy_put is None:
-            buy_put = put
+        # Test token refresh
+        token = get_schwab_access_token()
+        if token:
+            print("✓ Access token obtained")
+            
+            # Test options chain
+            print("\nTesting options chain for AAPL...")
+            chain = get_options_chain("AAPL")
+            if chain:
+                print("✓ Options chain retrieved")
+                
+                # Test put spread
+                spread = get_put_spread_recommendation("AAPL", 250.0)
+                if spread:
+                    print(f"✓ Put spread: Buy ${spread['buy_strike']} / Sell ${spread['sell_strike']}")
+                    print(f"  Expiration: {spread['expiration']}")
+                    print(f"  Cost: ${spread['spread_cost']:.2f}")
+            else:
+                print("✗ Failed to get options chain")
         else:
-            # Subsequent puts with lower strikes become sell_put candidates
-            sell_put = put
-    
-    return {
-        'buy_put': buy_put,
-        'sell_put': sell_put
-    }
-
-
-def find_cc_calls(calls: list, current_price: float, target_otm_pct: float = 8.0, min_bid: float = 0.05) -> Optional[dict]:
-    """
-    Find best call for covered call strategy.
-    
-    Strategy: Sell OTM call at least target_otm_pct above current price.
-    
-    Args:
-        calls: List of call dicts with 'strike', 'bid', 'ask', 'lastPrice', 'delta'
-        current_price: Current stock price
-        target_otm_pct: Target % out of the money (default 8%)
-        min_bid: Minimum bid price to consider
-    
-    Returns:
-        Dict with best call details or None if not found
-    """
-    if not calls or current_price <= 0:
-        return None
-    
-    target_strike = current_price * (1 + target_otm_pct / 100)
-    
-    # Sort calls by strike ascending
-    sorted_calls = sorted(calls, key=lambda x: x.get('strike', 0))
-    
-    # Filter to OTM calls only
-    otm_calls = [c for c in sorted_calls if c.get('strike', 0) > current_price]
-    
-    if not otm_calls:
-        return None
-    
-    # Try to find call at or above target strike with decent bid
-    best_call = None
-    for call in otm_calls:
-        strike = call.get('strike', 0)
-        bid = call.get('bid', 0) or 0
-        
-        if strike >= target_strike and bid >= min_bid:
-            best_call = call
-            break
-    
-    # Fallback: first OTM call with decent bid
-    if not best_call:
-        for call in otm_calls:
-            if call.get('bid', 0) >= min_bid:
-                best_call = call
-                break
-    
-    # Last resort: first OTM call
-    if not best_call:
-        best_call = otm_calls[0]
-    
-    strike = best_call.get('strike', 0)
-    bid = best_call.get('bid', 0) or 0
-    ask = best_call.get('ask', 0) or 0
-    mid = (bid + ask) / 2 if bid > 0 else ask
-    
-    return {
-        'strike': strike,
-        'bid': bid,
-        'ask': ask,
-        'mid': mid,
-        'delta': best_call.get('delta'),
-        'lastPrice': best_call.get('lastPrice', 0),
-        'upside_pct': ((strike - current_price) / current_price) * 100,
-        'premium_pct': (mid / current_price) * 100 if current_price > 0 else 0
-    }
+            print("✗ Failed to get access token")
+    else:
+        print("\n✗ Schwab API not configured")
+        print("\nSetup required:")
+        print("  1. export SCHWAB_APP_KEY='your-app-key'")
+        print("  2. export SCHWAB_APP_SECRET='your-app-secret'")
+        print("  3. Place schwab_tokens.json in scanner directory")
